@@ -190,7 +190,7 @@ function localizeNetworkText(text:string){
   if(locale==='zh')return text;
   if(text.startsWith('房间 ')&&text.endsWith(' 已创建'))return `Room ${text.slice(3,-4)} created`;
   if(text.startsWith('已连接房间 '))return `Connected to room ${text.slice(6)}`;
-  const exact:Record<string,string>={'一名选手正在加入…':'A player is joining…','与房主的连接已断开，可刷新后重新加入':'Disconnected from the host. Refresh to rejoin.','联机通道发生错误':'The multiplayer connection failed.','连接信令服务器超时':'Connection setup timed out.','找不到该房间，请检查房间码':'Room not found. Check the code.','这个房间码正在使用，请重试':'That room code is in use. Try again.','找不到房间，请确认房主在线':'Room not found. Make sure the host is online.','网络连接失败，请检查网络':'Network connection failed.'};
+  const exact:Record<string,string>={'一名选手正在加入…':'A player is joining…','与房主的连接已断开，可刷新后重新加入':'Disconnected from the host. Refresh to rejoin.','联机通道发生错误':'The multiplayer connection failed.','连接信令服务器超时':'Connection setup timed out.','找不到该房间，请检查房间码':'Room not found. Check the code.','这个房间码正在使用，请重试':'That room code is in use. Try again.','找不到房间，请确认房主在线':'Room not found. Make sure the host is online.','网络连接失败，请检查网络':'Network connection failed.','信令连接有波动，正在恢复…':'Signaling connection fluctuated; reconnecting…','信令连接有波动，当前对局仍可继续':'Signaling fluctuated; the current match can continue.'};
   return exact[text]??text;
 }
 function escapeHtml(s:string){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]!));}

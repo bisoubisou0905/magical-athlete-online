@@ -34,7 +34,17 @@ export class OnlineSession {
     await waitForOpen(peer);
     this.state = createGame(code, this.playerId, name);
     peer.on('connection', conn => this.acceptGuest(conn));
-    peer.on('error', err => this.onStatus(peerError(err.type), true));
+    peer.on('error', err => {
+      if(err.type==='network'){
+        this.onStatus(this.state?.phase==='lobby'?'信令连接有波动，正在恢复…':'信令连接有波动，当前对局仍可继续');
+        return;
+      }
+      this.onStatus(peerError(err.type), true);
+    });
+    peer.on('disconnected',()=>{
+      if(peer.destroyed)return;
+      try{peer.reconnect();}catch{ /* PeerJS may already be reconnecting. */ }
+    });
     this.onStatus(`房间 ${code} 已创建`);
     this.emitLocal();
     return code;

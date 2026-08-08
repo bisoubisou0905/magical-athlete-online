@@ -18,6 +18,8 @@ export class TrackScene {
   private positions:THREE.Vector3[]=[];
   private raf=0;
   private animationEndsAt=0;
+  private fpsSampleStarted=performance.now();
+  private fpsFrames=0;
 
   constructor(private canvas:HTMLCanvasElement,locale:Locale='zh'){
     this.locale=locale;
@@ -157,6 +159,11 @@ export class TrackScene {
   private animate=()=>{
     this.raf=requestAnimationFrame(this.animate);
     const now=performance.now();const t=now*.001;
+    this.fpsFrames++;
+    if(now-this.fpsSampleStarted>=1000){
+      this.canvas.dataset.fps=(this.fpsFrames*1000/(now-this.fpsSampleStarted)).toFixed(1);
+      this.fpsFrames=0;this.fpsSampleStarted=now;
+    }
     this.root.updateMatrixWorld();const cameraLocal=this.root.worldToLocal(this.camera.position.clone());
     for(const token of this.tokens.values()){
       const queue=token.userData.stepQueue as THREE.Vector3[]|undefined;
