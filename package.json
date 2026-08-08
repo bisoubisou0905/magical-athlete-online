@@ -1,0 +1,26 @@
+{
+  "name": "magical-athlete-online",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.16.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5",
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.179.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.1",
+    "vite-plugin-pwa": "^1.0.2",
+    "vitest": "^3.2.4",
+    "workbox-window": "^7.3.0"
+  }
+}
