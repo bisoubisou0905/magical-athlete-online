@@ -37,14 +37,19 @@ let updateReady=false;
 let activeEffect:LogEntry|null=null;
 let effectQueue:LogEntry[]=[];
 let effectUntil=0;
+let effectSequenceStep=0;
+let effectSequenceTotal=0;
 let lastSeenLogId=0;
 let diceGesture:DiceGesture={x:28,y:-90,power:.75,twist:-150};
 let pendingLocalGesture=false;
 let settlingRacerId:string|null=null;
 let presentationUntil=0;
 let finishDrama:FinishChance|null=null;
+let cameraMoved=false;
 const finishAudio=new FinishDramaAudio(soundEnabled);
-const EFFECT_DISPLAY_MS=720;
+const EFFECT_DISPLAY_MIN_MS=820;
+const EFFECT_DISPLAY_MAX_MS=1080;
+const EFFECT_GAP_MS=90;
 const NORMAL_ROLL_MS=1050;
 const FINISH_ROLL_MS=2350;
 const NORMAL_MOVE_DELAY=680;
@@ -59,6 +64,7 @@ const updateSW=registerSW({
 
 session.onState=view=>{
   const previous=currentView;
+  if(!previous&&view.phase==='race')lastSeenLogId=view.logs.at(-1)?.id??0;
   const newRoll=view.rollSeq>lastSeenRollSeq;
   const forecast=newRoll&&previous?getFinishChance(previous,previous.turnRacerId):null;
   currentView=view;
@@ -84,7 +90,7 @@ session.onState=view=>{
     rollTimer=window.setTimeout(()=>{render();pumpEffectQueue();},rollDuration+30);
   }
   const freshEffect=view.logs.find(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move');
-  if(freshEffect&&!settlingRacerId){settlingRacerId=previous?.turnRacerId??freshEffect.sourceRacerId??null;presentationUntil=performance.now()+EFFECT_DISPLAY_MS;}
+  if(freshEffect&&!settlingRacerId){settlingRacerId=previous?.turnRacerId??freshEffect.sourceRacerId??null;presentationUntil=performance.now()+EFFECT_DISPLAY_MIN_MS;}
   queueEffectEvents(view);
   if(previous?.phase==='select'&&view.phase==='race')startReveal(view);
   render();
@@ -102,7 +108,7 @@ renderLanding();
 function renderLanding(error=''){
   scene?.destroy();scene=null;sceneCanvas=null;currentView=null;
   clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);
-  activeEffect=null;effectQueue=[];effectUntil=0;lastSeenLogId=0;settlingRacerId=null;presentationUntil=0;finishDrama=null;revealActive=false;inspectRacerId=null;inspectSpace=null;
+  activeEffect=null;effectQueue=[];effectUntil=0;effectSequenceStep=0;effectSequenceTotal=0;lastSeenLogId=0;settlingRacerId=null;presentationUntil=0;finishDrama=null;cameraMoved=false;revealActive=false;inspectRacerId=null;inspectSpace=null;
   const room=new URLSearchParams(location.search).get('room')?.toUpperCase()??'';
   const remembered=localStorage.getItem('ma-player-name')??'';
   app.innerHTML=`<main class="join-page">
@@ -161,7 +167,7 @@ function render(){
   clearTimeout(motionTimer);
   if(pendingMotion>20)motionTimer=window.setTimeout(()=>render(),pendingMotion+40);
   const preservedCanvas=sceneCanvas;
-  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace},status);
+  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement,resetCamera},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,effectSequenceStep,effectSequenceTotal,diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace,cameraMoved},status);
   const placeholder=document.querySelector<HTMLCanvasElement>('#track-canvas');
   if(placeholder&&scene&&preservedCanvas){
     placeholder.replaceWith(preservedCanvas);
@@ -171,9 +177,10 @@ function render(){
   }else if(placeholder){
     scene?.destroy();
     sceneCanvas=placeholder;
-    scene=new TrackScene(placeholder,locale,{onRacerTap:handleRacerTap,onSpaceLongPress:space=>{inspectSpace=space;inspectRacerId=null;render();}});
+    scene=new TrackScene(placeholder,locale,{onRacerTap:handleRacerTap,onSpaceLongPress:space=>{inspectSpace=space;inspectRacerId=null;render();},onCameraViewChange:moved=>{if(cameraMoved===moved)return;cameraMoved=moved;render();}});
     scene.update(currentView,locale,presentedRacerId,activeEffect?.sourceRacerId,activeEffect?.targetRacerId,movementStartDelay,heldMovementRacerId,heldMovementKind);
   }else{
+    if(scene)cameraMoved=false;
     scene?.destroy();scene=null;sceneCanvas=null;
   }
 }
@@ -225,7 +232,7 @@ function scheduleBots(){
   else if(s.phase==='race')botId=s.players.find(p=>p.id===s.turnPlayerId&&p.isBot)?.id;
   if(!botId)return;
   const movementDelay=scene?.getPendingAnimationMs()??0;
-  const eventDelay=Math.max(0,effectUntil-performance.now())+effectQueue.length*EFFECT_DISPLAY_MS;
+  const eventDelay=Math.max(0,effectUntil-performance.now())+effectQueue.reduce((total,event)=>total+effectDisplayMs(event)+EFFECT_GAP_MS,0);
   const rollDelay=Math.max(0,rollFxUntil-performance.now());
   const delay=Math.max(850,rollDelay+180,movementDelay+450,eventDelay+220);
   botTimer=window.setTimeout(()=>takeBotAction(botId!),delay);
@@ -290,11 +297,21 @@ function confirmMovement(){
   if(!currentView)return;const gate=currentView.presentationGate;if(gate&&gate.playerId===currentView.viewerId)dispatch({type:'ACK_PRESENTATION',id:gate.id});
 }
 
+function resetCamera(){
+  scene?.resetCameraView();
+  if(cameraMoved){cameraMoved=false;render();}
+}
+
 function queueEffectEvents(view:GameView){
   const newest=view.logs.at(-1)?.id??lastSeenLogId;
   const fresh=view.logs.filter(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move');
   lastSeenLogId=Math.max(lastSeenLogId,newest);
-  if(fresh.length){effectQueue.push(...fresh);if(effectQueue.length>6)effectQueue=effectQueue.slice(-6);pumpEffectQueue();}
+  if(fresh.length){
+    if(!activeEffect&&effectQueue.length===0){effectSequenceStep=0;effectSequenceTotal=fresh.length;}
+    else effectSequenceTotal+=fresh.length;
+    effectQueue.push(...fresh);
+    pumpEffectQueue();
+  }
 }
 
 function pumpEffectQueue(){
@@ -306,10 +323,21 @@ function pumpEffectQueue(){
   const waitForPresentation=Math.max(waitForDice,waitForMotion,presentationUntil-performance.now(),waitForGate);
   if(waitForPresentation>20){eventPumpTimer=window.setTimeout(pumpEffectQueue,waitForPresentation+25);return;}
   activeEffect=effectQueue.shift()!;
-  effectUntil=performance.now()+EFFECT_DISPLAY_MS;
+  effectSequenceStep++;
+  const duration=effectDisplayMs(activeEffect);
+  effectUntil=performance.now()+duration;
   render();
   clearTimeout(eventTimer);
-  eventTimer=window.setTimeout(()=>{activeEffect=null;effectUntil=0;render();pumpEffectQueue();scheduleBots();},EFFECT_DISPLAY_MS+20);
+  eventTimer=window.setTimeout(()=>{
+    activeEffect=null;effectUntil=0;render();
+    if(effectQueue.length)eventPumpTimer=window.setTimeout(pumpEffectQueue,EFFECT_GAP_MS);
+    else{effectSequenceStep=0;effectSequenceTotal=0;scheduleBots();}
+  },duration);
+}
+
+function effectDisplayMs(event:LogEntry){
+  const text=locale==='zh'?event.text:event.textEn;
+  return Math.round(Math.min(EFFECT_DISPLAY_MAX_MS,Math.max(EFFECT_DISPLAY_MIN_MS,720+Array.from(text).length*7)));
 }
 
 function defaultDiceGesture(sequence:number,value:number):DiceGesture{

@@ -16,6 +16,8 @@ export interface UiState {
   motionLocked: boolean;
   activeEffect: LogEntry | null;
   effectQueueLength: number;
+  effectSequenceStep: number;
+  effectSequenceTotal: number;
   diceGesture: DiceGesture;
   presentedRacerId: string | null;
   finishChance: FinishChance;
@@ -24,6 +26,7 @@ export interface UiState {
   autoAdvance: boolean;
   inspectRacerId: string | null;
   inspectSpace: number | null;
+  cameraMoved: boolean;
 }
 
 export interface UiHandlers {
@@ -42,16 +45,20 @@ export interface UiHandlers {
   skipReveal:()=>void;
   closeInspector:()=>void;
   confirmMovement:()=>void;
+  resetCamera:()=>void;
 }
 
 export function renderGame(root:HTMLElement,view:GameView,h:UiHandlers,ui:UiState,status=''){
+  const previousStrip=root.querySelector<HTMLElement>('.score-strip');
+  const previousStripScroll=previousStrip?.scrollLeft??0;
+  const previousFocusedPlayer=previousStrip?.dataset.activePlayer??'';
   const me=view.players.find(p=>p.id===view.viewerId)!;
   const l=ui.locale;
   const order=playerOrder(view);
   const presentedRacer=view.racers.find(r=>r.id===ui.presentedRacerId);
   const presentedPlayerId=presentedRacer?.playerId??view.turnPlayerId;
   root.innerHTML=`
-    <main class="game-shell">
+    <main class="game-shell ${ui.activeEffect?'showing-effect':''}">
       <header class="topbar">
         <button class="brand" data-action="leave" aria-label="${tx(l,'返回首页','Back to home')}"><span class="brand-dot"></span><span>${tx(l,'魔法运动会','MAGICAL ATHLETE')}</span></button>
         <div class="top-actions">
@@ -60,15 +67,14 @@ export function renderGame(root:HTMLElement,view:GameView,h:UiHandlers,ui:UiStat
           <button class="icon-btn" data-action="settings" aria-label="${tx(l,'设置','Settings')}">⚙</button>
         </div>
       </header>
-      <section class="score-strip turn-order-strip" aria-label="${tx(l,'玩家、行动顺序与得分','Players, turn order, and scores')}">${order.map((id,index)=>playerChip(view,id,l,index,presentedPlayerId)).join('')}</section>
-      <section class="stage ${['lobby','draft','select'].includes(view.phase)?'panel-stage':''}">${stageContent(view,me.id,l,ui.motionLocked,ui.presentedRacerId,ui.finishChance)}</section>
+      <section class="score-strip turn-order-strip" data-active-player="${escapeAttr(presentedPlayerId??'')}" aria-label="${tx(l,'玩家、行动顺序与得分','Players, turn order, and scores')}">${order.map((id,index)=>playerChip(view,id,l,index,presentedPlayerId)).join('')}</section>
+      <section class="stage ${['lobby','draft','select'].includes(view.phase)?'panel-stage':''}">${stageContent(view,me.id,l,ui.motionLocked,ui.presentedRacerId,ui.finishChance,ui.cameraMoved)}</section>
       ${['race','raceResult','gameOver'].includes(view.phase)?`<canvas id="track-canvas" aria-label="${tx(l,'三维桌游赛道','3D board-game track')}"></canvas>`:''}
       <aside class="log-panel ${ui.logOpen?'open':''}">
         <div class="log-head"><b>${tx(l,'赛事播报','Race Log')}</b><button data-action="log" aria-label="${tx(l,'关闭','Close')}">×</button></div>
         <div class="log-scroll">${view.logs.slice(-18).reverse().map(x=>`<p class="log ${x.tone??''}">${escapeHtml(l==='zh'?x.text:(x.textEn??x.text))}</p>`).join('')}</div>
       </aside>
-      ${view.phase==='race' && view.logs.length&&!ui.activeEffect?`<div class="live-caption ${view.logs.at(-1)?.tone??''}">${escapeHtml(l==='zh'?view.logs.at(-1)!.text:(view.logs.at(-1)!.textEn??view.logs.at(-1)!.text))}</div>`:''}
-      ${ui.activeEffect?effectTheater(view,l,ui.activeEffect,ui.effectQueueLength):''}
+      ${ui.activeEffect?effectTheater(view,l,ui.activeEffect,ui.effectQueueLength,ui.effectSequenceStep,ui.effectSequenceTotal):''}
       ${ui.showRollFx&&view.lastRoll&&view.lastRollPlayerId?diceTheater(view,l,ui.diceGesture,ui.finishDrama):''}
       ${ui.showReveal&&view.racers.length?revealTheater(view,l,ui.revealIndex,ui.revealRemainingMs):''}
       ${ui.inspectRacerId||ui.inspectSpace!==null?inspector(view,l,ui.inspectRacerId,ui.inspectSpace):''}
@@ -76,13 +82,19 @@ export function renderGame(root:HTMLElement,view:GameView,h:UiHandlers,ui:UiStat
       ${status?`<div class="toast">${escapeHtml(status)}</div>`:''}
     </main>`;
   bind(root,h);
+  requestAnimationFrame(()=>{
+    if(!matchMedia('(max-width:560px)').matches)return;
+    const strip=root.querySelector<HTMLElement>('.score-strip');if(!strip)return;
+    if(previousFocusedPlayer!==(presentedPlayerId??''))root.querySelector<HTMLElement>('.player-chip.turn')?.scrollIntoView({behavior:'auto',block:'nearest',inline:'center'});
+    else strip.scrollLeft=previousStripScroll;
+  });
 }
 
-function stageContent(v:GameView,me:string,l:Locale,motionLocked:boolean,presentedRacerId:string|null,finishChance:FinishChance){
+function stageContent(v:GameView,me:string,l:Locale,motionLocked:boolean,presentedRacerId:string|null,finishChance:FinishChance,cameraMoved=false){
   if(v.phase==='lobby')return lobby(v,me,l);
   if(v.phase==='draft')return draft(v,me,l);
   if(v.phase==='select')return selection(v,me,l);
-  if(v.phase==='race')return raceHud(v,me,l,motionLocked,presentedRacerId,finishChance);
+  if(v.phase==='race')return raceHud(v,me,l,motionLocked,presentedRacerId,finishChance,cameraMoved);
   if(v.phase==='raceResult')return result(v,me,l);
   return gameOver(v,l);
 }
@@ -144,7 +156,7 @@ function lockedPreview(ids:string[],playerName:string,l:Locale,locked:boolean){
   return `<div class="locked-preview ${ids.length>1?'dual':''}" style="--racer:${racers[0].color}"><div class="selection-pulse"></div><div class="locked-arts">${racers.map(r=>`<img src="${racerImage(r.id)}" alt="${escapeHtml(name(r,l))}">`).join('')}</div><div><span>${tx(l,locked?'你的选择':'已选第一名',locked?'YOUR PICKS':'FIRST PICK')} · ${escapeHtml(playerName)}</span><h3>${racers.map(r=>escapeHtml(name(r,l))).join(' + ')}</h3><p>${racers.map(r=>escapeHtml(powerText(r,l))).join(' / ')}</p><small>${locked?tx(l,'其他玩家现在只能看见“已锁定”状态','Other players only see that you are ready'):tx(l,'再从下方选择一名不同角色','Choose one different racer below')}</small></div></div>`;
 }
 
-function raceHud(v:GameView,me:string,l:Locale,motionLocked:boolean,presentedRacerId:string|null,finishChance:FinishChance){
+function raceHud(v:GameView,me:string,l:Locale,motionLocked:boolean,presentedRacerId:string|null,finishChance:FinishChance,cameraMoved:boolean){
   const presentedRacer=v.racers.find(x=>x.id===presentedRacerId);
   const presentedPlayerId=presentedRacer?.playerId??v.turnPlayerId;
   const turn=presentedPlayerId===me;
@@ -160,18 +172,10 @@ function raceHud(v:GameView,me:string,l:Locale,motionLocked:boolean,presentedRac
   return `<div class="race-hud">
     <div class="race-badge">${tx(l,`第 ${v.raceNumber+1} 局 · ${v.track==='mild'?'温和里程':'狂野里程'}`,`Race ${v.raceNumber+1} · ${v.track==='mild'?'Mild Mile':'Wild Mile'}`)}</div>
     <div class="turn-banner" style="--player:${turnPlayer?.color??'#fff'}"><i></i><span>${turn?tx(l,'轮到你了','Your turn'):tx(l,`${turnPlayer?.name??''} 正在行动`,`${turnPlayer?.name??''} is moving`)}</span><b>${turnDef?escapeHtml(name(turnDef,l)):''}</b></div>
+    ${cameraMoved?`<button class="camera-reset" data-camera-reset aria-label="${tx(l,'回到棋盘全局视角','Reset board view')}"><span>⌖</span><b>${tx(l,'全局','FULL')}</b></button>`:''}
     ${actorCard(v,l,presentedRacerId)}
-    ${operationStatus(v,l)}
     <div class="command-dock">${gate?gate.playerId===me?`<button class="move-confirm" data-confirm-move><span>${warpGate?'✦':'☝'}</span><b>${warpGate?tx(l,'点击棋子传回起点','Tap your piece to warp to Start'):tx(l,'点击棋盘上的棋子开始移动','Tap your piece on the board to move')}</b><small>${warpGate?tx(l,'西西弗斯掷出 6，本次不再主移动','Sisyphus rolled 6; the main move ends'):tx(l,'也可以点这里开始逐格移动','Or tap here to start')}</small></button>`:`<div class="waiting moving-wait"><i></i>${warpGate?tx(l,`${gatePlayer?.name??''} 正在传回起点…`,`${gatePlayer?.name??''} is warping to Start…`):tx(l,`${gatePlayer?.name??''} 正在推动棋子…`,`${gatePlayer?.name??''} is moving their piece…`)}</div>`:motionLocked?`<div class="waiting moving-wait"><i></i>${tx(l,'正在逐格移动 / 展示能力联动…','Showing movement / power chain…')}</div>`:v.pendingDecision?.playerId===me?decision(v,l):turn?`<div class="turn-actions"><button class="roll-button ${finishReady?'finish-ready':''}" data-game="roll" draggable="true"><span class="roll-die-icon">${finishReady?'🏁':'⚄'}</span><span><b>${finishReady?tx(l,'冲线投骰！','ROLL FOR THE FINISH!'):tx(l,'投骰并移动','ROLL & MOVE')}</b><small>${finishHint}</small></span></button>${specials.map(s=>`<button class="btn special" data-special="${s.kind}">${escapeHtml(l==='zh'?s.label:s.labelEn)}</button>`).join('')}</div>`:`<div class="waiting">${tx(l,`等待 ${turnPlayer?.name??''}…`,`Waiting for ${turnPlayer?.name??''}…`)}</div>`}</div>
-    <div class="board-help">${tx(l,'点按棋子查看角色卡 · 长按格子查看效果','Tap a piece for its card · Hold a space for its effect')}</div>
   </div>`;
-}
-
-function operationStatus(v:GameView,l:Locale){
-  if(v.presentationGate){const p=v.players.find(x=>x.id===v.presentationGate!.playerId),r=v.racers.find(x=>x.id===v.presentationGate!.racerId),warp=v.presentationGate.kind==='warp';return`<div class="operation-status moving"><span>${warp?'✦':'☝'}</span><b>${escapeHtml(p?.name??'')}</b><small>${warp?tx(l,`掷出 6，等待将${r?`「${name(RACER_BY_ID[r.racerId],l)}」`:''}传回起点`,`rolled 6 and is about to warp back to Start`):tx(l,`已掷骰，等待推动${r?`「${name(RACER_BY_ID[r.racerId],l)}」`:''}`,`rolled and is about to move the piece`)}</small></div>`;}
-  if(v.pendingDecision){const p=v.players.find(x=>x.id===v.pendingDecision!.playerId);return`<div class="operation-status deciding"><span>${v.pendingDecision.kind==='recover-trip'?'💫':'◆'}</span><b>${escapeHtml(p?.name??'')}</b><small>${escapeHtml(l==='zh'?v.pendingDecision.prompt:v.pendingDecision.promptEn)}</small></div>`;}
-  const p=v.players.find(x=>x.id===v.turnPlayerId);const skills=v.turnPlayerId?availableSpecials(v,v.turnPlayerId):[];
-  return`<div class="operation-status ready"><span>◎</span><b>${escapeHtml(p?.name??'')}</b><small>${skills.length?tx(l,`可使用：${skills.map(x=>x.label).join(' / ')}，或直接投骰`,`May use ${skills.map(x=>x.labelEn).join(' / ')}, or roll`):tx(l,'准备投骰','Ready to roll')}</small></div>`;
 }
 
 function actorCard(v:GameView,l:Locale,presentedRacerId:string|null){
@@ -187,9 +191,10 @@ function actorCard(v:GameView,l:Locale,presentedRacerId:string|null){
   const effective=RACER_BY_ID[getRacerPowerId(v,racer)]??def;
   const copied=effective.id!==def.id;
   const movingGate=v.presentationGate?.racerId===racer.id?v.presentationGate:null;
+  const edgeAnchor=racer.position<=5||racer.position>=25?'actor-anchor-top':'actor-anchor-bottom';
   const queued=(racer.id!==v.turnRacerId&&v.racers.find(r=>r.id===v.turnRacerId&&r.playerId===player.id))
     ??v.turnRacerQueue.map(id=>v.racers.find(r=>r.id===id)).find(Boolean);
-  return `<article class="actor-card ${racer.tripped?'is-tripped':''}" style="--player:${player.color};--racer:${def.color}">
+  return `<article class="actor-card ${edgeAnchor} ${racer.tripped?'is-tripped':''}" style="--player:${player.color};--racer:${def.color}">
     <div class="actor-portrait"><img src="${racerImage(def.id)}" alt="${escapeHtml(name(def,l))}"><span>${movingGate?.kind==='warp'?tx(l,'传回起点','WARP TO START'):movingGate?tx(l,`前往第 ${movingGate.to} 格`,`TO SPACE ${movingGate.to}`):tx(l,`第 ${racer.position} 格`,`SPACE ${racer.position}`)}</span></div>
     <div class="actor-copy"><div class="actor-owner"><span class="player-avatar">${escapeHtml(playerInitial(player.name,player.isBot))}</span><span><small>${tx(l,'当前行动者','NOW ACTING')}</small><b>${escapeHtml(player.name)}</b></span></div><h3>${escapeHtml(name(def,l))}</h3><p>${escapeHtml(powerText(effective,l))}</p>${copied?`<small class="copied-power">${tx(l,'当前复制','Currently copying')} · ${escapeHtml(name(effective,l))}</small>`:''}</div>
     <div class="actor-locator"><span>${racer.tripped?'💫':'◎'}</span><b>${racer.tripped?tx(l,'当前已绊倒','Currently tripped'):tx(l,'棋盘同色光圈','Matching board ring')}</b>${queued?`<small>${tx(l,'随后行动','Then')} · ${escapeHtml(name(RACER_BY_ID[queued.racerId],l))}</small>`:''}</div>
@@ -240,13 +245,18 @@ function diceTheater(v:GameView,l:Locale,gesture:DiceGesture,finishDrama:FinishC
   return `<div class="dice-theater ${finishDrama?'finish-drama':''} ${finishMade?'finish-made':finishChanceHit?'finish-chance-hit':'finish-missed'}" style="--player:${player?.color??'#fff'};--die-body:${body};--throw-x:${x}px;--throw-y:${y}px;--throw-power:${Math.max(.55,Math.min(1.35,gesture.power))};--throw-twist:${gesture.twist}deg">${finishDrama?`<div class="finish-suspense"><span>🏁 ${tx(l,'冲线投骰','ROLL FOR THE FINISH')}</span><b>${tx(l,'全场屏息…','EVERYONE HOLD YOUR BREATH…')}</b><small>${tx(l,`可冲线点数：${finishDrama.successfulRolls.join('/')}`,`Winning rolls: ${finishDrama.successfulRolls.join('/')}`)}</small></div>`:''}<div class="dice-spotlight"></div><div class="dice-cube" data-value="${value}">${[1,2,3,4,5,6].map(dieFace).join('')}</div><div class="dice-result" data-face="${value}"><b>${value}</b></div><div class="dice-call"><span>${escapeHtml(player?.name??'')}</span><b>${value} ${tx(l,'点','')}</b><small>${def?escapeHtml(name(def,l)):''}</small></div>${finishDrama?`<div class="finish-outcome">${outcomeText}</div>`:''}</div>`;
 }
 
-function effectTheater(v:GameView,l:Locale,event:LogEntry,queueLength:number){
+function effectTheater(v:GameView,l:Locale,event:LogEntry,queueLength:number,step:number,total:number){
   const racer=v.racers.find(r=>r.id===event.sourceRacerId);
   if(!racer)return'';
   const player=v.players.find(p=>p.id===racer.playerId)!;
   const def=RACER_BY_ID[racer.racerId];
+  const target=event.targetRacerId?v.racers.find(r=>r.id===event.targetRacerId):null;
+  const targetDef=target?RACER_BY_ID[target.racerId]:null;
+  const targetPlayer=target?v.players.find(p=>p.id===target.playerId):null;
   const label=event.effectKind==='track'?tx(l,'跑道效果','TRACK EFFECT'):event.effectKind==='finish'?tx(l,'冲线结算','FINISH'):event.effectKind==='decision'?tx(l,'玩家操作','PLAYER CHOICE'):tx(l,'角色能力联动','POWER CHAIN');
-  return `<div class="effect-theater ${event.tone??''}" style="--player:${player.color};--racer:${def.color}"><img src="${racerImage(def.id)}" alt=""><div><span>${label}</span><b>${escapeHtml(player.name)} · ${escapeHtml(name(def,l))}</b><p>${escapeHtml(l==='zh'?event.text:event.textEn)}</p></div><aside><i>◎</i><small>${tx(l,'棋盘正在高亮','Highlighted on board')}</small>${queueLength?`<em>+${queueLength}</em>`:''}</aside></div>`;
+  const chainTotal=Math.max(total,step+queueLength,1);
+  const targetText=target&&target.id!==racer.id&&targetDef?`${escapeHtml(targetPlayer?.name??'')} · ${escapeHtml(name(targetDef,l))}`:'';
+  return `<div class="effect-theater ${event.tone??''}" role="status" aria-live="polite" style="--player:${player.color};--racer:${def.color};--chain-progress:${Math.min(1,step/chainTotal)}"><img src="${racerImage(def.id)}" alt=""><div><span>${label} · ${tx(l,`连锁 ${step}/${chainTotal}`,`CHAIN ${step}/${chainTotal}`)}</span><b>${escapeHtml(player.name)} · ${escapeHtml(name(def,l))}</b><p>${escapeHtml(l==='zh'?event.text:event.textEn)}</p>${targetText?`<small class="effect-target">↳ ${tx(l,'影响','Affects')} ${targetText}</small>`:''}</div><aside><i>${event.effectKind==='finish'?'🏁':event.effectKind==='track'?'◆':'↯'}</i><small>${queueLength?tx(l,`随后还有 ${queueLength} 步`,`${queueLength} more`):tx(l,'本次连锁结束','Chain complete')}</small><em>${step}/${chainTotal}</em></aside></div>`;
 }
 
 function revealTheater(v:GameView,l:Locale,index:number,remainingMs:number){
@@ -308,6 +318,7 @@ function bind(root:HTMLElement,h:UiHandlers){
   root.querySelectorAll<HTMLElement>('[data-reveal-next]').forEach(x=>x.onclick=h.skipReveal);
   root.querySelectorAll<HTMLElement>('[data-action="close-inspector"]').forEach(x=>x.onclick=h.closeInspector);
   root.querySelectorAll<HTMLElement>('[data-confirm-move]').forEach(x=>x.onclick=h.confirmMovement);
+  root.querySelectorAll<HTMLElement>('[data-camera-reset]').forEach(x=>x.onclick=h.resetCamera);
   root.querySelectorAll<HTMLElement>('[data-game]').forEach(x=>x.onclick=()=>{const a=x.dataset.game;if(a==='start')setTimeout(()=>h.dispatch({type:'START_GAME'}),0);if(a==='continue')h.dispatch({type:'CONTINUE'});});
   const roll=root.querySelector<HTMLButtonElement>('.roll-button');if(roll)bindRollGesture(roll,h);
   root.querySelectorAll<HTMLButtonElement>('[data-card]').forEach(x=>x.onclick=()=>{if(!x.dataset.card||x.classList.contains('is-picking'))return;const [kind,id]=x.dataset.card.split(':');x.classList.add('is-picking');x.closest('.card-grid')?.classList.add('is-resolving');x.closest('.wide-panel')?.setAttribute('aria-busy','true');x.parentElement?.querySelectorAll<HTMLButtonElement>('.racer-card').forEach(card=>card.disabled=true);window.setTimeout(()=>{if(kind==='draft')h.dispatch({type:'DRAFT',racerId:id});if(kind==='select')h.dispatch({type:'SELECT_RACER',racerId:id});},260);});

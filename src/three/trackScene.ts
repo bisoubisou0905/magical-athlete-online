@@ -7,6 +7,7 @@ import type { Locale } from '../ui/render';
 export interface TrackSceneHandlers {
   onRacerTap?:(racerStateId:string)=>void;
   onSpaceLongPress?:(space:number)=>void;
+  onCameraViewChange?:(moved:boolean)=>void;
 }
 
 export class TrackScene {
@@ -27,9 +28,22 @@ export class TrackScene {
   private fpsFrames=0;
   private cameraTarget=new THREE.Vector3();
   private effectFocusRacerId:string|null=null;
+  private interactionFocusRacerId:string|null=null;
+  private mobileView=false;
+  private mobileTokenScale=1;
   private raycaster=new THREE.Raycaster();
   private pointer=new THREE.Vector2();
-  private pointerStart:{x:number;y:number}|null=null;
+  private pointerStart:{id:number;x:number;y:number;lastX:number;lastY:number}|null=null;
+  private activePointers=new Map<number,{x:number;y:number}>();
+  private pointerDragged=false;
+  private pinchStartDistance=0;
+  private pinchStartZoom=1;
+  private pinching=false;
+  private manualCameraTarget=new THREE.Vector3();
+  private manualCameraZoom=1;
+  private manualCameraMoved=false;
+  private lastEmptyTapAt=0;
+  private lastEmptyTap={x:0,y:0};
   private longPressTimer:number|undefined;
   private longPressFired=false;
 
@@ -54,6 +68,7 @@ export class TrackScene {
     canvas.addEventListener('pointermove',this.onPointerMove);
     canvas.addEventListener('pointerup',this.onPointerUp);
     canvas.addEventListener('pointercancel',this.onPointerCancel);
+    canvas.addEventListener('wheel',this.onWheel,{passive:false});
     this.animate();
   }
 
@@ -64,9 +79,10 @@ export class TrackScene {
     view.racers.forEach((r,index)=>{
       active.add(r.id); let token=this.tokens.get(r.id);
       const owner=view.players.find(p=>p.id===r.playerId)!;
-      if(token?.userData.racerId!==r.racerId||token?.userData.locale!==this.locale||token?.userData.ownerName!==owner.name){
+      const viewerOwned=r.playerId===view.viewerId;
+      if(token?.userData.racerId!==r.racerId||token?.userData.locale!==this.locale||token?.userData.ownerName!==owner.name||token?.userData.viewerOwned!==viewerOwned){
         if(token){this.root.remove(token);this.disposeObject(token);}
-        token=this.makeToken(owner.color,r.racerId,owner.name);this.tokens.set(r.id,token);this.root.add(token);
+        token=this.makeToken(owner.color,r.racerId,owner.name,viewerOwned);this.tokens.set(r.id,token);this.root.add(token);
         const initial=this.positions[Math.min(r.position,TRACK_LENGTH)].clone();initial.y=.24+index*.025;token.position.copy(initial);token.userData.logicalPosition=r.position;
       }
       token.visible=!r.eliminated;
@@ -120,23 +136,30 @@ export class TrackScene {
     for(const [id,token] of this.tokens)if(!active.has(id)){this.root.remove(token);this.disposeObject(token);this.tokens.delete(id);}
     this.updateClusterMarkers(view);
     this.effectFocusRacerId=effectTargetRacerId??effectRacerId??null;
+    this.interactionFocusRacerId=heldMovementRacerId??null;
   }
 
   destroy(){
     cancelAnimationFrame(this.raf);removeEventListener('resize',this.resize);clearTimeout(this.longPressTimer);
-    this.canvas.removeEventListener('pointerdown',this.onPointerDown);this.canvas.removeEventListener('pointermove',this.onPointerMove);this.canvas.removeEventListener('pointerup',this.onPointerUp);this.canvas.removeEventListener('pointercancel',this.onPointerCancel);
+    this.canvas.removeEventListener('pointerdown',this.onPointerDown);this.canvas.removeEventListener('pointermove',this.onPointerMove);this.canvas.removeEventListener('pointerup',this.onPointerUp);this.canvas.removeEventListener('pointercancel',this.onPointerCancel);this.canvas.removeEventListener('wheel',this.onWheel);
     this.renderer.dispose();
   }
   resizeNow(){this.resize();}
   getPendingAnimationMs(){return Math.max(0,this.animationEndsAt-performance.now());}
+  resetCameraView(){
+    this.manualCameraTarget.set(0,0,0);this.manualCameraZoom=1;this.manualCameraMoved=false;
+    this.handlers.onCameraViewChange?.(false);
+  }
 
   private buildTrack(kind:TrackKind){
     for(const child of [...this.root.children])if(child.userData.track){this.root.remove(child);this.disposeObject(child);}
     const board=new THREE.Mesh(new THREE.BoxGeometry(23.4,.48,7.4),new THREE.MeshPhysicalMaterial({color:0x17131c,roughness:.62,clearcoat:.3,clearcoatRoughness:.55}));
     board.position.y=-.38;board.castShadow=true;board.receiveShadow=true;board.userData.track=true;this.root.add(board);
     const texture=this.textureLoader.load(`${import.meta.env.BASE_URL}tracks/${kind}-mile.webp`,()=>this.renderer.render(this.scene,this.camera));
-    texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(8,this.renderer.capabilities.getMaxAnisotropy());
-    const artwork=new THREE.Mesh(new THREE.PlaneGeometry(23.15,7.22),new THREE.MeshPhysicalMaterial({map:texture,transparent:true,roughness:.58,metalness:0,clearcoat:.22,clearcoatRoughness:.48,side:THREE.DoubleSide}));
+    texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=this.renderer.capabilities.getMaxAnisotropy();texture.generateMipmaps=true;texture.minFilter=THREE.LinearMipmapLinearFilter;texture.magFilter=THREE.LinearFilter;
+    const artworkMaterial=new THREE.MeshBasicMaterial({map:texture,transparent:true,side:THREE.DoubleSide});
+    artworkMaterial.toneMapped=false;
+    const artwork=new THREE.Mesh(new THREE.PlaneGeometry(23.15,7.22),artworkMaterial);
     artwork.rotation.x=-Math.PI/2;artwork.position.y=-.125;artwork.receiveShadow=true;artwork.userData.track=true;this.root.add(artwork);this.boardArtwork=artwork;
   }
 
@@ -185,8 +208,8 @@ export class TrackScene {
     }
   }
 
-  private makeToken(color:string,racerId:string,ownerName:string){
-    const g=new THREE.Group();g.userData.racerId=racerId;g.userData.locale=this.locale;g.userData.ownerName=ownerName;
+  private makeToken(color:string,racerId:string,ownerName:string,viewerOwned=false){
+    const g=new THREE.Group();g.userData.racerId=racerId;g.userData.locale=this.locale;g.userData.ownerName=ownerName;g.userData.viewerOwned=viewerOwned;
     const body=new THREE.Group();g.add(body);g.userData.body=body;
     const ink=new THREE.MeshStandardMaterial({color:0x17131c,roughness:.5,metalness:.08});
     const playerMaterial=new THREE.MeshPhysicalMaterial({color,roughness:.38,metalness:.05,clearcoat:.4,clearcoatRoughness:.35,emissive:new THREE.Color(color),emissiveIntensity:.08});
@@ -198,11 +221,12 @@ export class TrackScene {
     const stem=new THREE.Mesh(new THREE.BoxGeometry(.64,.18,.16),ink);stem.position.y=.39;stem.castShadow=true;body.add(stem);
     const frame=new THREE.Mesh(new THREE.BoxGeometry(1.16,1.32,.1),playerMaterial);frame.position.y=1.04;frame.castShadow=true;body.add(frame);
     const texture=this.textureLoader.load(`${import.meta.env.BASE_URL}racers/${racerId}.webp`);
-    texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(4,this.renderer.capabilities.getMaxAnisotropy());
+    texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=this.renderer.capabilities.getMaxAnisotropy();texture.generateMipmaps=true;texture.minFilter=THREE.LinearMipmapLinearFilter;texture.magFilter=THREE.LinearFilter;
     const portrait=new THREE.Mesh(new THREE.PlaneGeometry(1.04,1.18),new THREE.MeshStandardMaterial({map:texture,roughness:.7,metalness:0}));portrait.position.set(0,1.04,.056);body.add(portrait);
     const racerName=this.locale==='zh'?RACER_BY_ID[racerId].nameZh:RACER_BY_ID[racerId].name;
     const badge=this.textSprite(racerName,0xffffff);badge.position.set(0,1.69,.06);badge.scale.set(.82,.29,1);body.add(badge);
-    const ownerBadge=this.textSprite(ownerName,new THREE.Color(color).getHex(),true);ownerBadge.position.set(0,2.08,.07);ownerBadge.scale.set(1.42,.48,1);g.add(ownerBadge);
+    const ownerLabel=viewerOwned?(this.locale==='zh'?`你 · ${ownerName}`:`YOU · ${ownerName}`):ownerName;
+    const ownerBadge=this.textSprite(ownerLabel,new THREE.Color(color).getHex(),true);ownerBadge.position.set(0,2.08,.07);ownerBadge.scale.set(viewerOwned?1.56:1.42,viewerOwned ? .52 : .48,1);g.add(ownerBadge);
     const tripStatus=this.textSprite(this.locale==='zh'?'★ 绊倒':'★ DOWN',0xffb45d,true);tripStatus.position.set(0,2.48,.08);tripStatus.scale.set(1.02,.36,1);tripStatus.visible=false;g.add(tripStatus);g.userData.tripStatus=tripStatus;
     const turnMarker=this.textSprite(this.locale==='zh'?'▼ 行动中':'▼ ACTIVE',0xffd52a,true);turnMarker.position.set(0,2.73,.08);turnMarker.scale.set(1.16,.4,1);turnMarker.visible=false;g.add(turnMarker);g.userData.turnMarker=turnMarker;
     const eventMarker=this.textSprite(this.locale==='zh'?'能力触发!':'POWER!',0x55d5ee,true);eventMarker.position.set(0,2.78,.09);eventMarker.scale.set(1.2,.42,1);eventMarker.visible=false;g.add(eventMarker);g.userData.eventMarker=eventMarker;
@@ -276,7 +300,7 @@ export class TrackScene {
       body.rotation.z=THREE.MathUtils.lerp(body.rotation.z,bodyAngle,.24);
       const warpScale=warpElapsed>=0&&warpElapsed<520?.34+Math.sin(Math.min(1,warpElapsed/520)*Math.PI)*.9:1;
       body.scale.lerp(new THREE.Vector3(warpScale,warpScale,warpScale),.28);
-      const clusterScale=token.userData.clusterScale??1;const emphasis=token.userData.finished?1.06:token.userData.active?1.12:1;const baseScale=clusterScale*emphasis;
+      const clusterScale=token.userData.clusterScale??1;const emphasis=token.userData.finished?1.06:token.userData.active?1.12:1;const baseScale=clusterScale*emphasis*this.mobileTokenScale;
       token.scale.lerp(new THREE.Vector3(baseScale,baseScale,baseScale),.12);
       const material=token.userData.playerMaterial as THREE.MeshPhysicalMaterial;material.emissiveIntensity=token.userData.active?.24:.08;
       const focusRing=token.userData.focusRing as THREE.Mesh;const focusGlow=token.userData.focusGlow as THREE.Mesh;
@@ -284,11 +308,11 @@ export class TrackScene {
       if(focusGlow.visible){const glowPulse=1.05+Math.sin(t*5.2)*.16;focusGlow.scale.setScalar(glowPulse);}
     }
     for(const marker of this.clusterMarkers.values()){const ring=marker.userData.ring as THREE.Mesh;ring.rotation.z=t*.72;ring.scale.setScalar(1+Math.sin(t*4.4+marker.userData.count)*.055);}
-    const focusToken=(this.effectFocusRacerId?this.tokens.get(this.effectFocusRacerId):undefined)??movingFocus;
-    const desiredTarget=new THREE.Vector3();
+    const focusToken=(this.effectFocusRacerId?this.tokens.get(this.effectFocusRacerId):undefined)??movingFocus??(this.interactionFocusRacerId?this.tokens.get(this.interactionFocusRacerId):undefined);
+    const desiredTarget=this.manualCameraTarget.clone();
     if(focusToken)focusToken.getWorldPosition(desiredTarget);
     desiredTarget.y=0;this.cameraTarget.lerp(desiredTarget,focusToken?.09:.055);this.camera.lookAt(this.cameraTarget);
-    this.camera.zoom=THREE.MathUtils.lerp(this.camera.zoom,focusToken?1.22:1,.07);this.camera.updateProjectionMatrix();
+    this.camera.zoom=THREE.MathUtils.lerp(this.camera.zoom,focusToken?(this.mobileView?1.28:1.22):this.manualCameraZoom,.07);this.camera.updateProjectionMatrix();
     this.renderer.render(this.scene,this.camera);
   };
 
@@ -305,12 +329,64 @@ export class TrackScene {
   }
 
   private onPointerDown=(event:PointerEvent)=>{
-    this.pointerStart={x:event.clientX,y:event.clientY};this.longPressFired=false;clearTimeout(this.longPressTimer);this.canvas.setPointerCapture(event.pointerId);
-    this.longPressTimer=window.setTimeout(()=>{if(!this.pointerStart)return;this.longPressFired=true;const picked=this.pickAt(this.pointerStart.x,this.pointerStart.y);if(picked.racerStateId)this.handlers.onRacerTap?.(picked.racerStateId);else if(picked.space!==undefined)this.handlers.onSpaceLongPress?.(picked.space);},520);
+    this.activePointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+    this.canvas.setPointerCapture(event.pointerId);
+    if(this.activePointers.size>1){
+      clearTimeout(this.longPressTimer);this.pointerStart=null;this.pointerDragged=true;this.pinching=true;
+      const points=[...this.activePointers.values()];this.pinchStartDistance=Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y);this.pinchStartZoom=this.manualCameraZoom;
+      return;
+    }
+    this.pointerStart={id:event.pointerId,x:event.clientX,y:event.clientY,lastX:event.clientX,lastY:event.clientY};this.pointerDragged=false;this.pinching=false;this.longPressFired=false;clearTimeout(this.longPressTimer);
+    this.longPressTimer=window.setTimeout(()=>{if(!this.pointerStart||this.pointerDragged||this.activePointers.size!==1)return;this.longPressFired=true;const picked=this.pickAt(this.pointerStart.x,this.pointerStart.y);if(picked.racerStateId)this.handlers.onRacerTap?.(picked.racerStateId);else if(picked.space!==undefined)this.handlers.onSpaceLongPress?.(picked.space);},520);
   };
-  private onPointerMove=(event:PointerEvent)=>{if(this.pointerStart&&Math.hypot(event.clientX-this.pointerStart.x,event.clientY-this.pointerStart.y)>13){clearTimeout(this.longPressTimer);this.pointerStart=null;}};
-  private onPointerUp=(event:PointerEvent)=>{clearTimeout(this.longPressTimer);const start=this.pointerStart;this.pointerStart=null;if(!start||this.longPressFired)return;const picked=this.pickAt(event.clientX,event.clientY);if(picked.racerStateId)this.handlers.onRacerTap?.(picked.racerStateId);};
-  private onPointerCancel=()=>{clearTimeout(this.longPressTimer);this.pointerStart=null;this.longPressFired=false;};
+  private onPointerMove=(event:PointerEvent)=>{
+    if(!this.activePointers.has(event.pointerId))return;
+    this.activePointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+    if(this.activePointers.size>=2){
+      clearTimeout(this.longPressTimer);this.pointerDragged=true;this.pinching=true;
+      const points=[...this.activePointers.values()];const distance=Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y);
+      if(this.pinchStartDistance>0){const next=THREE.MathUtils.clamp(this.pinchStartZoom*distance/this.pinchStartDistance,1,1.9);if(Math.abs(next-this.manualCameraZoom)>.005){this.manualCameraZoom=next;this.manualCameraMoved=true;}}
+      return;
+    }
+    const start=this.pointerStart;if(!start||start.id!==event.pointerId)return;
+    const total=Math.hypot(event.clientX-start.x,event.clientY-start.y);
+    if(total>10){
+      clearTimeout(this.longPressTimer);this.pointerDragged=true;
+      this.panCamera(event.clientX-start.lastX,event.clientY-start.lastY);
+    }
+    start.lastX=event.clientX;start.lastY=event.clientY;
+  };
+  private onPointerUp=(event:PointerEvent)=>{
+    clearTimeout(this.longPressTimer);
+    const start=this.pointerStart;const wasDragged=this.pointerDragged||this.pinching;
+    this.activePointers.delete(event.pointerId);
+    try{this.canvas.releasePointerCapture(event.pointerId);}catch{ /* Pointer capture may already be released. */ }
+    if(this.activePointers.size){
+      const [id,point]=this.activePointers.entries().next().value as [number,{x:number;y:number}];
+      this.pointerStart={id,x:point.x,y:point.y,lastX:point.x,lastY:point.y};return;
+    }
+    this.pointerStart=null;
+    if(wasDragged){this.pointerDragged=false;this.pinching=false;if(this.manualCameraMoved)this.handlers.onCameraViewChange?.(true);return;}
+    if(!start||this.longPressFired){this.longPressFired=false;return;}
+    const picked=this.pickAt(event.clientX,event.clientY);
+    if(picked.racerStateId){this.handlers.onRacerTap?.(picked.racerStateId);return;}
+    const now=performance.now();
+    if(now-this.lastEmptyTapAt<300&&Math.hypot(event.clientX-this.lastEmptyTap.x,event.clientY-this.lastEmptyTap.y)<28)this.resetCameraView();
+    this.lastEmptyTapAt=now;this.lastEmptyTap={x:event.clientX,y:event.clientY};
+  };
+  private onPointerCancel=(event:PointerEvent)=>{clearTimeout(this.longPressTimer);this.activePointers.delete(event.pointerId);if(!this.activePointers.size){this.pointerStart=null;this.longPressFired=false;if(this.manualCameraMoved)this.handlers.onCameraViewChange?.(true);}};
+  private onWheel=(event:WheelEvent)=>{event.preventDefault();const next=THREE.MathUtils.clamp(this.manualCameraZoom*Math.exp(-event.deltaY*.0012),1,1.9);if(Math.abs(next-this.manualCameraZoom)<.005)return;this.manualCameraZoom=next;this.manualCameraMoved=true;this.handlers.onCameraViewChange?.(true);};
 
-  private resize=()=>{const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;this.renderer.setSize(rect.width,rect.height,false);const aspect=rect.width/rect.height;this.camera.up.set(0,1,0);this.camera.zoom=1;if(aspect<.72){this.root.rotation.y=Math.PI/2;this.camera.position.set(0,18,24);this.camera.lookAt(this.cameraTarget);const halfWidth=6.35;this.camera.left=-halfWidth;this.camera.right=halfWidth;this.camera.top=halfWidth/aspect;this.camera.bottom=-halfWidth/aspect;}else{this.root.rotation.y=0;this.camera.position.set(16,18,20);this.camera.lookAt(this.cameraTarget);const size=10;this.camera.left=-size*aspect;this.camera.right=size*aspect;this.camera.top=size;this.camera.bottom=-size;}this.camera.updateProjectionMatrix();};
+  private panCamera(dx:number,dy:number){
+    const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;
+    const right=new THREE.Vector3(1,0,0).applyQuaternion(this.camera.quaternion);right.y=0;if(right.lengthSq()<.001)right.set(1,0,0);else right.normalize();
+    const up=new THREE.Vector3(0,1,0).applyQuaternion(this.camera.quaternion);up.y=0;if(up.lengthSq()<.001)up.set(0,0,-1);else up.normalize();
+    const worldX=(this.camera.right-this.camera.left)/(rect.width*Math.max(.01,this.camera.zoom));
+    const worldY=(this.camera.top-this.camera.bottom)/(rect.height*Math.max(.01,this.camera.zoom));
+    this.manualCameraTarget.addScaledVector(right,-dx*worldX).addScaledVector(up,dy*worldY);
+    const xLimit=this.mobileView?2.55:7.6,zLimit=this.mobileView?7.6:2.5;
+    this.manualCameraTarget.x=THREE.MathUtils.clamp(this.manualCameraTarget.x,-xLimit,xLimit);this.manualCameraTarget.z=THREE.MathUtils.clamp(this.manualCameraTarget.z,-zLimit,zLimit);this.manualCameraTarget.y=0;this.manualCameraMoved=true;
+  }
+
+  private resize=()=>{const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;this.renderer.setSize(rect.width,rect.height,false);const aspect=rect.width/rect.height;this.camera.up.set(0,1,0);this.mobileView=aspect<.72;this.mobileTokenScale=this.mobileView?1.22:1;if(this.mobileView){this.root.rotation.y=Math.PI/2;this.camera.position.set(0,18,24);this.camera.lookAt(this.cameraTarget);const halfWidth=5.45;this.camera.left=-halfWidth;this.camera.right=halfWidth;this.camera.top=halfWidth/aspect;this.camera.bottom=-halfWidth/aspect;}else{this.root.rotation.y=0;this.camera.position.set(16,18,20);this.camera.lookAt(this.cameraTarget);const size=10;this.camera.left=-size*aspect;this.camera.right=size*aspect;this.camera.top=size;this.camera.bottom=-size;}this.camera.updateProjectionMatrix();};
 }

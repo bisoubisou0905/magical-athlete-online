@@ -355,7 +355,7 @@ function finalizeKeptRoll(s: GameState, r: RacerState, roll: number) {
   // A discarded roll never happened: roll-triggered powers resolve only after all rerolls finish.
   if (roll === 1) {
     for (const worm of activeRacers(s).filter(x => x.id !== r.id && hasPower(s,x,'inchworm'))) {
-      power(s, worm, `${nameOf(s,worm.playerId)} 的尺蠖扭动 1 格，${nameOf(s,r.playerId)} 跳过本次移动`, `${nameOf(s,worm.playerId)}'s Inchworm moves 1; ${nameOf(s,r.playerId)} skips the move`);
+      power(s, worm, `${nameOf(s,worm.playerId)} 的尺蠖扭动 1 格，${nameOf(s,r.playerId)} 跳过本次移动`, `${nameOf(s,worm.playerId)}'s Inchworm moves 1; ${nameOf(s,r.playerId)} skips the move`,r);
       moveRacer(s, worm, 1, 'power');
       s.skippedTurns[`roll:${r.id}`] = 1;
     }
@@ -364,7 +364,7 @@ function finalizeKeptRoll(s: GameState, r: RacerState, roll: number) {
   }
   if (roll === 6) {
     for (const lackey of activeRacers(s).filter(x => x.id !== r.id && hasPower(s,x,'lackey'))) {
-      power(s, lackey, `${nameOf(s,lackey.playerId)} 的侍从抢先移动 2 格`, `${nameOf(s,lackey.playerId)}'s Lackey moves 2 before the roller`);
+      power(s, lackey, `${nameOf(s,lackey.playerId)} 的侍从抢先移动 2 格`, `${nameOf(s,lackey.playerId)}'s Lackey moves 2 before the roller`,r);
       moveRacer(s, lackey, 2, 'power');
     }
   }
@@ -415,9 +415,9 @@ function resolveRoll(s: GameState, r: RacerState, roll: number, rocketDouble = f
   }
   if (hasPower(s,r,'hare')) { amount += 2;describePower(s,r,'野兔的主移动 +2','Hare adds 2 to its main move'); }
   const gunk=activeRacers(s).find(x=>x.id!==r.id&&hasPower(s,x,'gunk'));
-  if (gunk) { amount -= 1;describePower(s,gunk,`${racerNameOf(s,r)} 受黏液影响，主移动 -1`,`${racerNameOf(s,r,'en')} is slowed by Gunk: main move -1`); }
+  if (gunk) { amount -= 1;describePower(s,gunk,`${racerNameOf(s,r)} 受黏液影响，主移动 -1`,`${racerNameOf(s,r,'en')} is slowed by Gunk: main move -1`,r); }
   for (const coach of activeRacers(s).filter(x => hasPower(s,x,'coach') && x.position === r.position)) {
-    amount += 1;describePower(s,coach,`${racerNameOf(s,r)} 与教练同格，主移动 +1`,`${racerNameOf(s,r,'en')} shares a space with Coach: main move +1`);
+    amount += 1;describePower(s,coach,`${racerNameOf(s,r)} 与教练同格，主移动 +1`,`${racerNameOf(s,r,'en')} shares a space with Coach: main move +1`,r);
   }
   if (hasPower(s,r,'party-animal')) {
     const guests=activeRacers(s).filter(x => x.id !== r.id && x.position === r.position).length;
@@ -460,7 +460,7 @@ function beginPlayerTurn(s:GameState){
 function startRacerTurn(s: GameState) {
   const r = currentRacer(s);
   if (!r || s.phase !== 'race') return;
-  if(r.racerId==='copycat'){
+  if(isCopycatSource(r)){
     const leaders=leadRacers(s,r);
     const choiceKey=`copycat:${r.id}`;
     const selected=String(s.prediction[choiceKey]??'');
@@ -553,7 +553,7 @@ function resolveDecision(s: GameState, value: string) {
   }
   if(d.kind==='copycat-leader'){
     const copycat=currentRacer(s),chosen=racerById(s,value);
-    if(!copycat||copycat.racerId!=='copycat'||!chosen||!leadRacers(s,copycat).some(x=>x.id===chosen.id))return;
+    if(!copycat||!isCopycatSource(copycat)||!chosen||!leadRacers(s,copycat).some(x=>x.id===chosen.id))return;
     s.pendingDecision=null;s.prediction[`copycat:${copycat.id}`]=chosen.id;
     addLog(s,`${racerNameOf(s,copycat)} 复制 ${RACER_BY_ID[chosen.racerId].nameZh}`,'power',`${racerNameOf(s,copycat,'en')} copies ${RACER_BY_ID[chosen.racerId].name}`,{sourceRacerId:copycat.id,targetRacerId:chosen.id,effectKind:'decision'});
     startRacerTurn(s);return;
@@ -577,13 +577,13 @@ function resolveDecision(s: GameState, value: string) {
     return;
   }
   if (d.kind === 'genius-predict') { s.prediction[turnKey(s,r)] = Number(value); power(s,r,`天才预测 ${value} 点`,`Genius predicts ${value}`); rollForMove(s,r); }
-  else if (d.kind === 'mastermind-predict') { const predicted=racerById(s,value);if(!predicted)return;s.prediction[`mastermind:${r.id}`] = value; power(s,r,`幕后主脑预测 ${racerNameOf(s,predicted)} 获胜`,`Mastermind predicts ${racerNameOf(s,predicted,'en')} will win`); rollForMove(s,r); }
+  else if (d.kind === 'mastermind-predict') { const predicted=racerById(s,value);if(!predicted)return;s.prediction[`mastermind:${r.id}`] = value; power(s,r,`幕后主脑预测 ${racerNameOf(s,predicted)} 获胜`,`Mastermind predicts ${racerNameOf(s,predicted,'en')} will win`,predicted); rollForMove(s,r); }
   else if (d.kind === 'flip-flop') {
     const target = racerById(s,value); if (!target) return;
-    [r.position,target.position]=[target.position,r.position]; power(s,r,`换位怪与 ${racerNameOf(s,target)} 交换位置`,`Flip Flop swaps spaces with ${racerNameOf(s,target)}`); checkStopEffects(s,r,0); endTurn(s,r);
+    [r.position,target.position]=[target.position,r.position]; power(s,r,`换位怪与 ${racerNameOf(s,target)} 交换位置`,`Flip Flop swaps spaces with ${racerNameOf(s,target)}`,target); checkStopEffects(s,r,0); endTurn(s,r);
   } else if (d.kind === 'hypnotist') {
     const target=racerById(s,value); if (!target) return;
-    target.position=r.position; power(s,r,`催眠师把 ${racerNameOf(s,target)} 传送到身边`,`Hypnotist warps ${racerNameOf(s,target)} to its space`); checkStopEffects(s,target,0);
+    target.position=r.position; power(s,r,`催眠师把 ${racerNameOf(s,target)} 传送到身边`,`Hypnotist warps ${racerNameOf(s,target)} to its space`,target); checkStopEffects(s,target,0);
   } else if (d.kind === 'third-wheel') {
     r.position=Number(value); power(s,r,`第三轮传送到第 ${value} 格`,`Third Wheel warps to space ${value}`); checkStopEffects(s,r,0);
   } else if (d.kind === 'magician-reroll') {
@@ -635,7 +635,7 @@ function moveRacer(s: GameState, r: RacerState, amount: number, cause: 'main'|'p
   destination = Math.max(0,destination);
   const stickler=activeRacers(s).find(x=>x.id!==r.id&&hasPower(s,x,'stickler'));
   if (destination > TRACK_LENGTH && stickler) {
-    power(s,stickler,`${nameOf(s,r.playerId)} 因较真者要求精确冲线，原地不动`,`${nameOf(s,r.playerId)} cannot cross because Stickler requires an exact move`); return;
+    power(s,stickler,`${nameOf(s,r.playerId)} 因较真者要求精确冲线，原地不动`,`${nameOf(s,r.playerId)} cannot cross because Stickler requires an exact move`,r); return;
   }
 
   const sameHuge = activeRacers(s).find(x=>x.id!==r.id && hasPower(s,x,'huge-baby') && x.position===destination && destination!==0);
@@ -643,7 +643,7 @@ function moveRacer(s: GameState, r: RacerState, amount: number, cause: 'main'|'p
     destination=Math.max(0,sameHuge.position-1);
     const loopKey=`huge-loop:${sameHuge.id}:${r.id}`;
     const closesScoocherLoop=hasPower(s,r,'scoocher')&&destination===start&&s.turnFlags[loopKey];
-    if(!closesScoocherLoop){s.turnFlags[loopKey]=true;power(s,sameHuge,`${nameOf(s,r.playerId)} 被巨婴挡在后一格`,`${nameOf(s,r.playerId)} is stopped one space behind Huge Baby`);}
+    if(!closesScoocherLoop){s.turnFlags[loopKey]=true;power(s,sameHuge,`${nameOf(s,r.playerId)} 被巨婴挡在后一格`,`${nameOf(s,r.playerId)} is stopped one space behind Huge Baby`,r);}
     else addLog(s,'巨婴与蹭步者的循环完成一次后结束','power','The Huge Baby and Scoocher loop completes once and ends',{sourceRacerId:sameHuge.id,targetRacerId:r.id,effectKind:'ability'});
   }
   r.position = destination;
@@ -651,7 +651,7 @@ function moveRacer(s: GameState, r: RacerState, amount: number, cause: 'main'|'p
     const displaced=activeRacers(s).filter(x=>x.id!==r.id&&x.position===destination);
     for(const other of displaced){
       other.position=Math.max(0,destination-1);
-      power(s,r,`巨婴把 ${racerNameOf(s,other)} 挤到后一格`,`Huge Baby puts ${racerNameOf(s,other,'en')} one space behind`);
+      power(s,r,`巨婴把 ${racerNameOf(s,other)} 挤到后一格`,`Huge Baby puts ${racerNameOf(s,other,'en')} one space behind`,other);
       if(direction>0&&hasPower(s,other,'banana')&&start<destination&&other.position<=start){
         r.tripped=true;
         addLog(s,`${racerNameOf(s,r)} 超过香蕉并绊倒`,'warning',`${racerNameOf(s,r,'en')} passes Banana and trips`,{sourceRacerId:other.id,targetRacerId:r.id,effectKind:'ability'});
@@ -665,7 +665,7 @@ function moveRacer(s: GameState, r: RacerState, amount: number, cause: 'main'|'p
   if (direction > 0) {
     for (const passed of activeRacers(s).filter(x=>x.id!==r.id && x.position>start && x.position<destination)) {
       if (hasPower(s,passed,'banana')) { r.tripped=true; addLog(s,`${nameOf(s,r.playerId)} 超过香蕉并绊倒`,'warning',`${nameOf(s,r.playerId)} passes Banana and trips`,{sourceRacerId:passed.id,targetRacerId:r.id,effectKind:'ability'}); }
-      if (hasPower(s,r,'centaur')) { power(s,r,`半人马踢退 ${nameOf(s,passed.playerId)} 2 格`,`Centaur kicks ${nameOf(s,passed.playerId)} back 2`); moveRacer(s,passed,-2,'power',depth+1); }
+      if (hasPower(s,r,'centaur')) { power(s,r,`半人马踢退 ${nameOf(s,passed.playerId)} 2 格`,`Centaur kicks ${nameOf(s,passed.playerId)} back 2`,passed); moveRacer(s,passed,-2,'power',depth+1); }
     }
   }
   if (destination >= TRACK_LENGTH) {
@@ -673,7 +673,7 @@ function moveRacer(s: GameState, r: RacerState, amount: number, cause: 'main'|'p
     if(s.phase!=='race')return;
   }
   for (const fish of followers.filter(x=>!x.finished&&!x.eliminated)) {
-    fish.position=destination; power(s,fish,`${nameOf(s,fish.playerId)} 的吸盘鱼跟随移动`,`${nameOf(s,fish.playerId)}'s Suckerfish follows the move`);
+    fish.position=destination; power(s,fish,`${nameOf(s,fish.playerId)} 的吸盘鱼跟随移动`,`${nameOf(s,fish.playerId)}'s Suckerfish follows the move`,r);
     if(destination>=TRACK_LENGTH)finishRacer(s,fish);else checkStopEffects(s,fish,depth+1);
     if(s.phase!=='race')return;
   }
@@ -692,13 +692,13 @@ function checkStopEffects(s: GameState, r: RacerState, depth: number) {
   if (hasPower(s,r,'baba-yaga')) for (const other of activeRacers(s).filter(x=>x.id!==r.id && x.position===r.position)) { other.tripped=true;addLog(s,`${racerNameOf(s,other)} 被芭芭雅嘎绊倒`,'warning',`${racerNameOf(s,other,'en')} is tripped by Baba Yaga`,{sourceRacerId:r.id,targetRacerId:other.id,effectKind:'ability'}); }
   const occupants=activeRacers(s).filter(x=>x.position===r.position);
   if (hasPower(s,r,'mouth') && occupants.length===2) {
-    const victim=occupants.find(x=>x.id!==r.id)!; victim.eliminated=true; s.eliminationOrder.push(victim.id); power(s,r,`${racerNameOf(s,victim)} 被大嘴淘汰！`,`${racerNameOf(s,victim,'en')} is eliminated by M.O.U.T.H.!`); checkRaceEndBySurvivors(s); return;
+    const victim=occupants.find(x=>x.id!==r.id)!; victim.eliminated=true; s.eliminationOrder.push(victim.id); power(s,r,`${racerNameOf(s,victim)} 被大嘴淘汰！`,`${racerNameOf(s,victim,'en')} is eliminated by M.O.U.T.H.!`,victim); checkRaceEndBySurvivors(s); return;
   }
-  if (occupants.length===2) for (const romantic of activeRacers(s).filter(x=>hasPower(s,x,'romantic'))) { power(s,romantic,'浪漫家见证两人同格，移动 2','Romantic sees a pair sharing a space and moves 2'); moveRacer(s,romantic,2,'power',depth+1); }
+  if (occupants.length===2) for (const romantic of activeRacers(s).filter(x=>hasPower(s,x,'romantic'))) { power(s,romantic,'浪漫家见证两人同格，移动 2','Romantic sees a pair sharing a space and moves 2',r); moveRacer(s,romantic,2,'power',depth+1); }
   for (const duelist of occupants.filter(x=>hasPower(s,x,'duelist'))) {
     const foe=occupants.find(x=>x.id!==duelist.id); if (!foe) continue;
     const a=rand(s,6)+1,b=rand(s,6)+1; const winner=a>=b?duelist:foe;
-    power(s,duelist,`决斗！${nameOf(s,duelist.playerId)} ${a} : ${b} ${nameOf(s,foe.playerId)}，${nameOf(s,winner.playerId)} 前进 2`,`Duel! ${nameOf(s,duelist.playerId)} ${a} : ${b} ${nameOf(s,foe.playerId)}. ${nameOf(s,winner.playerId)} moves 2`);
+    power(s,duelist,`决斗！${nameOf(s,duelist.playerId)} ${a} : ${b} ${nameOf(s,foe.playerId)}，${nameOf(s,winner.playerId)} 前进 2`,`Duel! ${nameOf(s,duelist.playerId)} ${a} : ${b} ${nameOf(s,foe.playerId)}. ${nameOf(s,winner.playerId)} moves 2`,foe);
     moveRacer(s,winner,2,'power',depth+1);
   }
 }
@@ -767,16 +767,16 @@ function endTurn(s: GameState, r: RacerState) {
   s.turnPlayerId=nextActivePlayer(s,r.playerId);s.turnRacerId=null;beginPlayerTurn(s);
 }
 
-function power(s:GameState,r:RacerState,text:string,textEn=text) {
-  addLog(s,text,'power',textEn,{sourceRacerId:r.id,effectKind:'ability'});
+function power(s:GameState,r:RacerState,text:string,textEn=text,target?:RacerState) {
+  addLog(s,text,'power',textEn,{sourceRacerId:r.id,targetRacerId:target?.id,effectKind:'ability'});
   for (const scooch of activeRacers(s).filter(x=>x.id!==r.id && hasPower(s,x,'scoocher'))) {
     addLog(s,`${nameOf(s,scooch.playerId)} 的蹭步者前进 1`,'power',`${nameOf(s,scooch.playerId)}'s Scoocher moves 1`,{sourceRacerId:scooch.id,effectKind:'ability'});
     moveRacer(s,scooch,1,'power',16);
   }
 }
 
-function describePower(s:GameState,r:RacerState,text:string,textEn=text){
-  addLog(s,text,'power',textEn,{sourceRacerId:r.id,effectKind:'ability'});
+function describePower(s:GameState,r:RacerState,text:string,textEn=text,target?:RacerState){
+  addLog(s,text,'power',textEn,{sourceRacerId:r.id,targetRacerId:target?.id,effectKind:'ability'});
   triggerScoochers(s,r);
 }
 
@@ -809,15 +809,17 @@ export function availableSpecials(s:GameState,playerId:string): Array<{kind:Deci
 }
 
 export function getRacerPowerId(s:GameState,r:RacerState):string {
-  if(r.powerOverride) return r.powerOverride;
-  if(r.racerId==='copycat') {
+  const basePower=r.powerOverride??r.racerId;
+  if(basePower==='copycat') {
     const leaders=leadRacers(s,r);
     const selected=String(s.prediction[`copycat:${r.id}`]??'');
     const lead=leaders.find(x=>x.id===selected)??leaders[0];
     return lead?.racerId==='copycat' ? 'copycat' : (lead?.powerOverride ?? lead?.racerId ?? 'copycat');
   }
-  return r.racerId;
+  return basePower;
 }
+
+function isCopycatSource(r:RacerState){return (r.powerOverride??r.racerId)==='copycat';}
 
 function leadRacers(s:GameState,copycat:RacerState){
   const candidates=activeRacers(s).filter(x=>x.id!==copycat.id);

@@ -413,6 +413,17 @@ describe('Magical Athlete rules engine',()=>{
     expect(copy.racers[0].position).toBe(3);
   });
 
+  it('keeps Copycat dynamic when Egg or Twin copies its power',()=>{
+    let copied=raceState(['egg','hare','coach'],[0,5,5]);
+    copied.racers[0].powerOverride='copycat';
+    copied=beginConfiguredTurn(copied);
+    expect(copied.pendingDecision?.kind).toBe('copycat-leader');
+    copied=applyAction(copied,'p1',{type:'DECIDE',value:'p2:0'});
+    expect(getRacerPowerId(copied,copied.racers[0])).toBe('hare');
+    copied.rngSeed=seedForRoll(1);copied=applyAction(copied,'p1',{type:'ROLL'});
+    expect(copied.racers[0].position).toBe(3);
+  });
+
   it('sets up Egg and optional Twin copied powers before the race',()=>{
     let egg=raceState(['egg','banana']);egg.prediction.setupQueue='[]';
     egg.pendingDecision={playerId:'p1',kind:'egg-copy',prompt:'复制',promptEn:'Copy',options:[{value:'sisyphus',label:'西西弗斯',labelEn:'Sisyphus'}],optional:false};
