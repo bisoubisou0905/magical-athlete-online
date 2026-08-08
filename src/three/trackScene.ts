@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { GameView, TrackKind } from '../game/types';
 import { RACER_BY_ID } from '../game/racers';
 import { TRACK_LENGTH } from '../game/engine';
+import type { Locale } from '../ui/render';
 
 const TILE_COLORS=[0xffd52a,0xff4b2b,0x55d5ee,0x53b55b,0xf04cab,0x9562d9];
 
@@ -13,10 +14,13 @@ export class TrackScene {
   private tokens=new Map<string,THREE.Group>();
   private textureLoader=new THREE.TextureLoader();
   private trackKind:TrackKind|null=null;
+  private locale:Locale;
   private positions:THREE.Vector3[]=[];
   private raf=0;
+  private animationEndsAt=0;
 
-  constructor(private canvas:HTMLCanvasElement){
+  constructor(private canvas:HTMLCanvasElement,locale:Locale='zh'){
+    this.locale=locale;
     this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:'high-performance'});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
     this.renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -35,28 +39,49 @@ export class TrackScene {
     this.animate();
   }
 
-  update(view:GameView){
+  update(view:GameView,locale:Locale=this.locale){
+    if(locale!==this.locale){this.locale=locale;this.trackKind=null;}
     if(view.track!==this.trackKind){this.trackKind=view.track;this.buildTrack(view.track);}
     const active=new Set<string>();
     view.racers.forEach((r,index)=>{
       active.add(r.playerId); let token=this.tokens.get(r.playerId);
-      if(token?.userData.racerId!==r.racerId){
+      const owner=view.players.find(p=>p.id===r.playerId)!;
+      if(token?.userData.racerId!==r.racerId||token?.userData.locale!==this.locale||token?.userData.ownerName!==owner.name){
         if(token){this.root.remove(token);this.disposeObject(token);}
-        token=this.makeToken(view.players.find(p=>p.id===r.playerId)!.color,r.racerId);this.tokens.set(r.playerId,token);this.root.add(token);
+        token=this.makeToken(owner.color,r.racerId,owner.name);this.tokens.set(r.playerId,token);this.root.add(token);
+        const initial=this.positions[Math.min(r.position,TRACK_LENGTH)].clone();initial.y=.24+index*.025;token.position.copy(initial);token.userData.logicalPosition=r.position;
       }
       token.visible=!r.eliminated;
       const base=this.positions[Math.min(r.position,TRACK_LENGTH)];
       const same=view.racers.filter(x=>!x.eliminated&&x.position===r.position);const slot=same.findIndex(x=>x.playerId===r.playerId);const angle=(slot/Math.max(1,same.length))*Math.PI*2;
-      const target=base.clone().add(new THREE.Vector3(Math.cos(angle)*0.42,0.24+index*0.025,Math.sin(angle)*0.42));
+      const fanRadius=same.length > 1 ? .68 : .32;
+      const target=base.clone().add(new THREE.Vector3(Math.cos(angle)*fanRadius,0.24+index*0.025,Math.sin(angle)*fanRadius));
+      const previous=token.userData.logicalPosition as number;
+      if(previous!==r.position){
+        const direction=Math.sign(r.position-previous);
+        const queue:THREE.Vector3[]=[];
+        for(let position=previous+direction;direction>0?position<=r.position:position>=r.position;position+=direction){
+          const pathPoint=this.positions[Math.min(Math.max(position,0),TRACK_LENGTH)].clone();pathPoint.y=.24+index*.025;queue.push(pathPoint);
+        }
+        token.userData.stepQueue=queue;
+        token.userData.stepTarget=undefined;
+        token.userData.moveStartsAt=performance.now()+(view.lastRollPlayerId===r.playerId?680:120);
+        this.animationEndsAt=Math.max(this.animationEndsAt,token.userData.moveStartsAt+queue.length*205+250);
+        token.userData.logicalPosition=r.position;
+      }
       token.userData.target=target; token.userData.tripped=r.tripped; token.userData.finished=r.finished;
+      token.userData.turnMarker.visible=view.turnPlayerId===r.playerId;
+      token.userData.active=view.turnPlayerId===r.playerId;
     });
     for(const [id,token] of this.tokens)if(!active.has(id)){this.root.remove(token);this.disposeObject(token);this.tokens.delete(id);}
   }
 
   destroy(){cancelAnimationFrame(this.raf);removeEventListener('resize',this.resize);this.renderer.dispose();}
+  resizeNow(){this.resize();}
+  getPendingAnimationMs(){return Math.max(0,this.animationEndsAt-performance.now());}
 
   private buildTrack(kind:TrackKind){
-    for(const child of [...this.root.children])if(child.userData.track)this.root.remove(child);
+    for(const child of [...this.root.children])if(child.userData.track){this.root.remove(child);this.disposeObject(child);}
     const board=new THREE.Mesh(new THREE.BoxGeometry(22,0.5,12),new THREE.MeshPhysicalMaterial({color:kind==='mild'?0x30243a:0x28182f,roughness:.78,clearcoat:.16,clearcoatRoughness:.8}));board.position.y=-.47;board.receiveShadow=true;board.userData.track=true;this.root.add(board);
     this.positions.forEach((p,i)=>{
       const halo=new THREE.Mesh(new THREE.BoxGeometry(1.68,.12,1.68),new THREE.MeshStandardMaterial({color:0x100c15,roughness:.65}));halo.position.copy(p);halo.position.y=-.08;halo.userData.track=true;this.root.add(halo);
@@ -67,8 +92,8 @@ export class TrackScene {
         const mark=wildMark(i);if(mark){const sprite=this.textSprite(mark.text,mark.color);sprite.position.copy(p).add(new THREE.Vector3(0,.43,0));sprite.userData.track=true;this.root.add(sprite);}
       }
     });
-    const start=this.textSprite('START',0xffffff);start.position.copy(this.positions[0]).add(new THREE.Vector3(0,.75,-1.2));start.scale.multiplyScalar(1.35);start.userData.track=true;this.root.add(start);
-    const finish=this.textSprite('FINISH',0xffffff);finish.position.copy(this.positions[TRACK_LENGTH]).add(new THREE.Vector3(0,.75,-1.2));finish.scale.multiplyScalar(1.35);finish.userData.track=true;this.root.add(finish);
+    const start=this.textSprite(this.locale==='zh'?'起点':'START',0xffffff);start.position.copy(this.positions[0]).add(new THREE.Vector3(0,.75,-1.2));start.scale.multiplyScalar(1.35);start.userData.track=true;this.root.add(start);
+    const finish=this.textSprite(this.locale==='zh'?'终点':'FINISH',0xffffff);finish.position.copy(this.positions[TRACK_LENGTH]).add(new THREE.Vector3(0,.75,-1.2));finish.scale.multiplyScalar(1.35);finish.userData.track=true;this.root.add(finish);
     this.addFinishGate();
   }
 
@@ -80,8 +105,8 @@ export class TrackScene {
     return pts;
   }
 
-  private makeToken(color:string,racerId:string){
-    const g=new THREE.Group();g.userData.racerId=racerId;
+  private makeToken(color:string,racerId:string,ownerName:string){
+    const g=new THREE.Group();g.userData.racerId=racerId;g.userData.locale=this.locale;g.userData.ownerName=ownerName;
     const ink=new THREE.MeshStandardMaterial({color:0x17131c,roughness:.5,metalness:.08});
     const playerMaterial=new THREE.MeshPhysicalMaterial({color,roughness:.38,metalness:.05,clearcoat:.4,clearcoatRoughness:.35,emissive:new THREE.Color(color),emissiveIntensity:.08});
     const shadow=new THREE.Mesh(new THREE.CircleGeometry(.67,24),new THREE.MeshBasicMaterial({color:0x09070c,transparent:true,opacity:.34,depthWrite:false}));shadow.rotation.x=-Math.PI/2;shadow.position.y=.012;g.add(shadow);
@@ -92,7 +117,11 @@ export class TrackScene {
     const texture=this.textureLoader.load(`${import.meta.env.BASE_URL}racers/${racerId}.webp`);
     texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(4,this.renderer.capabilities.getMaxAnisotropy());
     const portrait=new THREE.Mesh(new THREE.PlaneGeometry(1.24,1.2),new THREE.MeshStandardMaterial({map:texture,roughness:.7,metalness:0}));portrait.position.set(0,1.04,.056);g.add(portrait);
-    const badge=this.textSprite(RACER_BY_ID[racerId].nameZh,0xffffff);badge.position.set(0,1.76,.06);badge.scale.set(1.15,.42,1);g.add(badge);
+    const racerName=this.locale==='zh'?RACER_BY_ID[racerId].nameZh:RACER_BY_ID[racerId].name;
+    const badge=this.textSprite(racerName,0xffffff);badge.position.set(0,1.7,.06);badge.scale.set(.92,.32,1);g.add(badge);
+    const ownerBadge=this.textSprite(ownerName,new THREE.Color(color).getHex(),true);ownerBadge.position.set(0,2.1,.07);ownerBadge.scale.set(1.72,.58,1);g.add(ownerBadge);
+    const turnMarker=this.textSprite('▼',0xffd52a);turnMarker.position.set(0,2.62,.08);turnMarker.scale.set(.54,.4,1);turnMarker.visible=false;g.add(turnMarker);g.userData.turnMarker=turnMarker;
+    g.userData.playerMaterial=playerMaterial;
     g.position.set(0,4,0);return g;
   }
 
@@ -118,12 +147,38 @@ export class TrackScene {
     object.traverse(child=>{if(!(child instanceof THREE.Mesh||child instanceof THREE.Sprite))return;child.geometry?.dispose();const materials=Array.isArray(child.material)?child.material:[child.material];for(const material of materials){const map=(material as THREE.MeshStandardMaterial).map;map?.dispose();material.dispose();}});
   }
 
-  private textSprite(text:string,color:number){
-    const c=document.createElement('canvas');c.width=256;c.height=128;const x=c.getContext('2d')!;x.font='900 54px Arial';x.textAlign='center';x.textBaseline='middle';x.lineWidth=12;x.strokeStyle='#17131c';x.strokeText(text,128,64);x.fillStyle=`#${color.toString(16).padStart(6,'0')}`;x.fillText(text,128,64);
+  private textSprite(text:string,color:number,plaque=false){
+    const c=document.createElement('canvas');c.width=384;c.height=128;const x=c.getContext('2d')!;
+    if(plaque){x.fillStyle='#17131ce8';x.beginPath();x.roundRect(8,18,368,92,24);x.fill();x.lineWidth=6;x.strokeStyle=`#${color.toString(16).padStart(6,'0')}`;x.stroke();}
+    const fontSize=text.length>12?38:text.length>8?44:54;x.font=`900 ${fontSize}px 'Noto Sans SC',Arial,sans-serif`;x.textAlign='center';x.textBaseline='middle';x.lineWidth=12;x.strokeStyle='#17131c';x.strokeText(text,192,64);x.fillStyle=`#${color.toString(16).padStart(6,'0')}`;x.fillText(text,192,64);
     const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthWrite:false}));sprite.scale.set(2,1,1);return sprite;
   }
 
-  private animate=()=>{this.raf=requestAnimationFrame(this.animate);const t=performance.now()*.001;this.root.updateMatrixWorld();const cameraLocal=this.root.worldToLocal(this.camera.position.clone());for(const token of this.tokens.values()){const target=token.userData.target as THREE.Vector3|undefined;if(target){token.position.x=THREE.MathUtils.lerp(token.position.x,target.x,.12);token.position.z=THREE.MathUtils.lerp(token.position.z,target.z,.12);token.position.y=THREE.MathUtils.lerp(token.position.y,target.y+Math.sin(t*3.4+token.id)*.035,.12);}token.rotation.y=Math.atan2(cameraLocal.x-token.position.x,cameraLocal.z-token.position.z);token.rotation.z=THREE.MathUtils.lerp(token.rotation.z,token.userData.tripped?Math.PI/2:0,.1);token.scale.setScalar(token.userData.finished?1.08:1);}this.renderer.render(this.scene,this.camera);};
+  private animate=()=>{
+    this.raf=requestAnimationFrame(this.animate);
+    const now=performance.now();const t=now*.001;
+    this.root.updateMatrixWorld();const cameraLocal=this.root.worldToLocal(this.camera.position.clone());
+    for(const token of this.tokens.values()){
+      const queue=token.userData.stepQueue as THREE.Vector3[]|undefined;
+      let moving=false;
+      if((queue?.length||token.userData.stepTarget)&&now>=(token.userData.moveStartsAt??0)){
+        moving=true;
+        if(!token.userData.stepTarget){token.userData.stepFrom=token.position.clone();token.userData.stepTarget=queue!.shift();token.userData.stepStarted=now;}
+        const progress=Math.min(1,(now-token.userData.stepStarted)/185);
+        token.position.lerpVectors(token.userData.stepFrom,token.userData.stepTarget,progress);
+        token.position.y+=Math.sin(progress*Math.PI)*.42;
+        if(progress>=1){token.position.copy(token.userData.stepTarget);token.userData.stepTarget=undefined;}
+      }else if(!queue?.length){
+        const target=token.userData.target as THREE.Vector3|undefined;
+        if(target){token.position.x=THREE.MathUtils.lerp(token.position.x,target.x,.18);token.position.z=THREE.MathUtils.lerp(token.position.z,target.z,.18);token.position.y=THREE.MathUtils.lerp(token.position.y,target.y+Math.sin(t*3.4+token.id)*.035,.18);}
+      }
+      token.rotation.y=Math.atan2(cameraLocal.x-token.position.x,cameraLocal.z-token.position.z);
+      token.rotation.z=THREE.MathUtils.lerp(token.rotation.z,token.userData.tripped?Math.PI/2:moving?Math.sin(t*24)*.08:0,.16);
+      const baseScale=token.userData.finished?1.08:token.userData.active?1.12:1;token.scale.lerp(new THREE.Vector3(baseScale,baseScale,baseScale),.12);
+      const material=token.userData.playerMaterial as THREE.MeshPhysicalMaterial;material.emissiveIntensity=token.userData.active?.24:.08;
+    }
+    this.renderer.render(this.scene,this.camera);
+  };
   private resize=()=>{const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;this.renderer.setSize(rect.width,rect.height,false);const aspect=rect.width/rect.height;this.camera.up.set(0,1,0);if(aspect<.72){this.root.rotation.y=Math.PI/2;this.camera.position.set(0,18,24);this.camera.lookAt(0,0,0);const halfWidth=7.2;this.camera.left=-halfWidth;this.camera.right=halfWidth;this.camera.top=halfWidth/aspect;this.camera.bottom=-halfWidth/aspect;}else{this.root.rotation.y=0;this.camera.position.set(16,18,20);this.camera.lookAt(0,0,0);const size=10;this.camera.left=-size*aspect;this.camera.right=size*aspect;this.camera.top=size;this.camera.bottom=-size;}this.camera.updateProjectionMatrix();};
 }
 

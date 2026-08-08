@@ -33,11 +33,13 @@ export interface RacerState {
   firstTurn: boolean;
   powerOverride?: string;
   rerolls: number;
+  dicemongerUsed: boolean;
 }
 
 export interface LogEntry {
   id: number;
   text: string;
+  textEn: string;
   tone?: 'normal' | 'power' | 'score' | 'warning';
 }
 
@@ -48,6 +50,10 @@ export type DecisionKind =
   | 'hypnotist'
   | 'third-wheel'
   | 'rocket-double'
+  | 'alchemist-four'
+  | 'cheerleader'
+  | 'egg-copy'
+  | 'twin-copy'
   | 'magician-reroll'
   | 'dicemonger-reroll';
 
@@ -55,7 +61,8 @@ export interface PendingDecision {
   playerId: string;
   kind: DecisionKind;
   prompt: string;
-  options: Array<{ value: string; label: string }>;
+  promptEn: string;
+  options: Array<{ value: string; label: string; labelEn: string }>;
   optional: boolean;
   roll?: number;
 }
@@ -68,6 +75,8 @@ export interface GameState {
   draftPool: string[];
   draftOrder: string[];
   draftIndex: number;
+  draftDeck: string[];
+  draftRound: number;
   raceNumber: number;
   track: TrackKind;
   selected: Record<string, string | null>;
@@ -80,11 +89,15 @@ export interface GameState {
   logs: LogEntry[];
   pendingDecision: PendingDecision | null;
   lastRoll: number | null;
+  lastRollPlayerId: string | null;
+  rollSeq: number;
   nextLogId: number;
   rngSeed: number;
   demoMode: boolean;
   prediction: Record<string, string | number>;
   skippedTurns: Record<string, string | number>;
+  turnFlags: Record<string, boolean>;
+  eliminationOrder: string[];
 }
 
 export type GameAction =
