@@ -23,6 +23,7 @@ export interface PlayerState {
 }
 
 export interface RacerState {
+  id: string;
   playerId: string;
   racerId: string;
   position: number;
@@ -41,6 +42,18 @@ export interface LogEntry {
   text: string;
   textEn: string;
   tone?: 'normal' | 'power' | 'score' | 'warning';
+  sourceRacerId?: string;
+  targetRacerId?: string;
+  effectKind?: 'move' | 'ability' | 'track' | 'finish' | 'decision';
+}
+
+export interface PresentationGate {
+  id: number;
+  kind: 'move' | 'warp';
+  playerId: string;
+  racerId: string;
+  from: number;
+  to: number;
 }
 
 export type DecisionKind =
@@ -55,7 +68,10 @@ export type DecisionKind =
   | 'egg-copy'
   | 'twin-copy'
   | 'magician-reroll'
-  | 'dicemonger-reroll';
+  | 'dicemonger-reroll'
+  | 'two-player-order'
+  | 'copycat-leader'
+  | 'recover-trip';
 
 export interface PendingDecision {
   playerId: string;
@@ -80,16 +96,21 @@ export interface GameState {
   raceNumber: number;
   track: TrackKind;
   selected: Record<string, string | null>;
+  selectedSecond: Record<string, string | null>;
   racers: RacerState[];
   turnPlayerId: string | null;
+  turnRacerId: string | null;
+  turnRacerQueue: string[];
   turnOrder: string[];
   finishers: string[];
-  previousLastPlayerId: string | null;
+  raceStartPlayerId: string | null;
+  raceStartScores: Record<string, number>;
   winnersByRace: string[];
   logs: LogEntry[];
   pendingDecision: PendingDecision | null;
   lastRoll: number | null;
   lastRollPlayerId: string | null;
+  lastRollRacerId: string | null;
   rollSeq: number;
   nextLogId: number;
   rngSeed: number;
@@ -98,6 +119,7 @@ export interface GameState {
   skippedTurns: Record<string, string | number>;
   turnFlags: Record<string, boolean>;
   eliminationOrder: string[];
+  presentationGate: PresentationGate | null;
 }
 
 export type GameAction =
@@ -107,6 +129,7 @@ export type GameAction =
   | { type: 'ROLL' }
   | { type: 'USE_SPECIAL'; kind: DecisionKind }
   | { type: 'DECIDE'; value: string }
+  | { type: 'ACK_PRESENTATION'; id: number }
   | { type: 'CONTINUE' };
 
 export interface NetworkActionEnvelope {

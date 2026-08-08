@@ -123,7 +123,10 @@ export class OnlineSession {
 export function projectView(state:GameState,viewerId:string):GameView {
   const view=structuredClone(state) as GameView;
   view.viewerId=viewerId;
-  if(view.phase==='select') for(const id of Object.keys(view.selected)) if(id!==viewerId)view.selected[id]=view.selected[id]?'hidden':null;
+  if(view.phase==='select') for(const id of Object.keys(view.selected)) if(id!==viewerId){
+    view.selected[id]=view.selected[id]?'hidden':null;
+    view.selectedSecond[id]=view.selectedSecond[id]?'hidden':null;
+  }
   return view;
 }
 
