@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import type { GameView, TrackKind } from '../game/types';
-import { RACER_BY_ID } from '../game/racers';
 import { TRACK_LENGTH } from '../game/engine';
 import type { Locale } from '../ui/render';
 
@@ -16,7 +15,6 @@ export class TrackScene {
   private renderer:THREE.WebGLRenderer;
   private root=new THREE.Group();
   private tokens=new Map<string,THREE.Group>();
-  private clusterMarkers=new Map<number,THREE.Group>();
   private textureLoader=new THREE.TextureLoader();
   private boardArtwork:THREE.Mesh|null=null;
   private trackKind:TrackKind|null=null;
@@ -125,16 +123,13 @@ export class TrackScene {
       token.userData.target=target;token.userData.tripped=r.tripped;token.userData.finished=r.finished;token.userData.clusterScale=this.sharedSpaceScale(same.length);
       const isTurn=(presentedTurnRacerId??view.turnRacerId)===r.id;
       const isEffect=effectRacerId===r.id||effectTargetRacerId===r.id;
-      token.userData.turnMarker.visible=isTurn&&!isEffect;
-      token.userData.eventMarker.visible=isEffect;
       token.userData.focusRing.visible=isTurn||isEffect;
-      token.userData.focusGlow.visible=isTurn||isEffect;
       token.userData.active=isTurn||isEffect;
       token.userData.effectFocus=isEffect;
-      token.userData.tripStatus.visible=r.tripped;
+      const focusMaterial=(token.userData.focusRing as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      focusMaterial.color.setHex(isEffect?0x55d5ee:0xffffff);
     });
     for(const [id,token] of this.tokens)if(!active.has(id)){this.root.remove(token);this.disposeObject(token);this.tokens.delete(id);}
-    this.updateClusterMarkers(view);
     this.effectFocusRacerId=effectTargetRacerId??effectRacerId??null;
     this.interactionFocusRacerId=heldMovementRacerId??null;
   }
@@ -180,33 +175,15 @@ export class TrackScene {
     if(!Number.isFinite(tangent.x))tangent.set(1,0);
     const normal=new THREE.Vector2(-tangent.y,tangent.x);
     const coordinates=count===2
-      ? [[-.43,0],[.43,0]]
+      ? [[-.58,0],[.58,0]]
       : count===3
-        ? [[-.48,.18],[.48,.18],[0,-.38]]
-        : [[-.4,.28],[.4,.28],[-.4,-.3],[.4,-.3]];
+        ? [[-.66,.2],[.66,.2],[0,-.56]]
+        : [[-.58,.46],[.58,.46],[-.58,-.46],[.58,-.46]];
     const [across,along]=coordinates[Math.min(slot,coordinates.length-1)];
     return normal.multiplyScalar(across).add(tangent.multiplyScalar(along));
   }
 
-  private sharedSpaceScale(count:number){return count<=1?1:count===2?.9:count===3?.8:.72;}
-
-  private updateClusterMarkers(view:GameView){
-    const occupied=new Map<number,number>();
-    for(const racer of view.racers.filter(r=>!r.eliminated))occupied.set(racer.position,(occupied.get(racer.position)??0)+1);
-    const needed=new Set([...occupied].filter(([,count])=>count>1).map(([position])=>position));
-    for(const [position,marker] of this.clusterMarkers){
-      if(needed.has(position)&&marker.userData.count===occupied.get(position))continue;
-      this.root.remove(marker);this.disposeObject(marker);this.clusterMarkers.delete(position);
-    }
-    for(const position of needed){
-      if(this.clusterMarkers.has(position))continue;
-      const count=occupied.get(position)!;const marker=new THREE.Group();marker.userData.cluster=true;marker.userData.count=count;
-      const disc=new THREE.Mesh(new THREE.CircleGeometry(.91,32),new THREE.MeshBasicMaterial({color:0x17131c,transparent:true,opacity:.6,depthWrite:false}));disc.rotation.x=-Math.PI/2;disc.position.y=.026;marker.add(disc);
-      const ring=new THREE.Mesh(new THREE.RingGeometry(.72,.91,36),new THREE.MeshBasicMaterial({color:0xffd52a,transparent:true,opacity:.9,depthWrite:false,side:THREE.DoubleSide}));ring.rotation.x=-Math.PI/2;ring.position.y=.04;marker.add(ring);marker.userData.ring=ring;
-      const badge=this.textSprite(this.locale==='zh'?`同格 ×${count}`:`SHARED ×${count}`,0xffd52a,true);badge.position.set(0,3.08,.05);badge.scale.set(1.35,.45,1);marker.add(badge);
-      marker.position.copy(this.positions[Math.min(position,TRACK_LENGTH)]);this.clusterMarkers.set(position,marker);this.root.add(marker);
-    }
-  }
+  private sharedSpaceScale(count:number){return count<=1?1:count===2?.84:count===3?.72:.64;}
 
   private makeToken(color:string,racerId:string,ownerName:string,viewerOwned=false){
     const g=new THREE.Group();g.userData.racerId=racerId;g.userData.locale=this.locale;g.userData.ownerName=ownerName;g.userData.viewerOwned=viewerOwned;
@@ -214,8 +191,7 @@ export class TrackScene {
     const ink=new THREE.MeshStandardMaterial({color:0x17131c,roughness:.5,metalness:.08});
     const playerMaterial=new THREE.MeshPhysicalMaterial({color,roughness:.38,metalness:.05,clearcoat:.4,clearcoatRoughness:.35,emissive:new THREE.Color(color),emissiveIntensity:.08});
     const shadow=new THREE.Mesh(new THREE.CircleGeometry(.67,24),new THREE.MeshBasicMaterial({color:0x09070c,transparent:true,opacity:.34,depthWrite:false}));shadow.rotation.x=-Math.PI/2;shadow.position.y=.012;g.add(shadow);
-    const focusGlow=new THREE.Mesh(new THREE.CircleGeometry(1.02,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.2,depthWrite:false,blending:THREE.AdditiveBlending}));focusGlow.rotation.x=-Math.PI/2;focusGlow.position.y=.025;focusGlow.visible=false;g.add(focusGlow);g.userData.focusGlow=focusGlow;
-    const focusRing=new THREE.Mesh(new THREE.RingGeometry(.76,.96,36),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.92,depthWrite:false,side:THREE.DoubleSide}));focusRing.rotation.x=-Math.PI/2;focusRing.position.y=.045;focusRing.visible=false;g.add(focusRing);g.userData.focusRing=focusRing;
+    const focusRing=new THREE.Mesh(new THREE.RingGeometry(.69,.77,36),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.78,depthWrite:false,side:THREE.DoubleSide}));focusRing.rotation.x=-Math.PI/2;focusRing.position.y=.045;focusRing.visible=false;g.add(focusRing);g.userData.focusRing=focusRing;
     const base=new THREE.Mesh(new THREE.CylinderGeometry(.54,.65,.2,20),playerMaterial);base.position.y=.13;base.castShadow=true;base.receiveShadow=true;body.add(base);
     const rim=new THREE.Mesh(new THREE.TorusGeometry(.56,.065,8,28),ink);rim.rotation.x=Math.PI/2;rim.position.y=.24;body.add(rim);
     const stem=new THREE.Mesh(new THREE.BoxGeometry(.64,.18,.16),ink);stem.position.y=.39;stem.castShadow=true;body.add(stem);
@@ -223,13 +199,6 @@ export class TrackScene {
     const texture=this.textureLoader.load(`${import.meta.env.BASE_URL}racers/${racerId}.webp`);
     texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=this.renderer.capabilities.getMaxAnisotropy();texture.generateMipmaps=true;texture.minFilter=THREE.LinearMipmapLinearFilter;texture.magFilter=THREE.LinearFilter;
     const portrait=new THREE.Mesh(new THREE.PlaneGeometry(1.04,1.18),new THREE.MeshStandardMaterial({map:texture,roughness:.7,metalness:0}));portrait.position.set(0,1.04,.056);body.add(portrait);
-    const racerName=this.locale==='zh'?RACER_BY_ID[racerId].nameZh:RACER_BY_ID[racerId].name;
-    const badge=this.textSprite(racerName,0xffffff);badge.position.set(0,1.69,.06);badge.scale.set(.82,.29,1);body.add(badge);
-    const ownerLabel=viewerOwned?(this.locale==='zh'?`你 · ${ownerName}`:`YOU · ${ownerName}`):ownerName;
-    const ownerBadge=this.textSprite(ownerLabel,new THREE.Color(color).getHex(),true);ownerBadge.position.set(0,2.08,.07);ownerBadge.scale.set(viewerOwned?1.56:1.42,viewerOwned ? .52 : .48,1);g.add(ownerBadge);
-    const tripStatus=this.textSprite(this.locale==='zh'?'★ 绊倒':'★ DOWN',0xffb45d,true);tripStatus.position.set(0,2.48,.08);tripStatus.scale.set(1.02,.36,1);tripStatus.visible=false;g.add(tripStatus);g.userData.tripStatus=tripStatus;
-    const turnMarker=this.textSprite(this.locale==='zh'?'▼ 行动中':'▼ ACTIVE',0xffd52a,true);turnMarker.position.set(0,2.73,.08);turnMarker.scale.set(1.16,.4,1);turnMarker.visible=false;g.add(turnMarker);g.userData.turnMarker=turnMarker;
-    const eventMarker=this.textSprite(this.locale==='zh'?'能力触发!':'POWER!',0x55d5ee,true);eventMarker.position.set(0,2.78,.09);eventMarker.scale.set(1.2,.42,1);eventMarker.visible=false;g.add(eventMarker);g.userData.eventMarker=eventMarker;
     const tripFx=new THREE.Group();
     ['✦','★','✧'].forEach((symbol,index)=>{const star=this.textSprite(symbol,index===1?0xffd52a:0xff8f4d);star.position.set((index-1)*.52,1.15+index*.22,.2);star.scale.set(.33,.33,1);tripFx.add(star);});
     tripFx.visible=false;g.add(tripFx);g.userData.tripFx=tripFx;
@@ -303,11 +272,9 @@ export class TrackScene {
       const clusterScale=token.userData.clusterScale??1;const emphasis=token.userData.finished?1.06:token.userData.active?1.12:1;const baseScale=clusterScale*emphasis*this.mobileTokenScale;
       token.scale.lerp(new THREE.Vector3(baseScale,baseScale,baseScale),.12);
       const material=token.userData.playerMaterial as THREE.MeshPhysicalMaterial;material.emissiveIntensity=token.userData.active?.24:.08;
-      const focusRing=token.userData.focusRing as THREE.Mesh;const focusGlow=token.userData.focusGlow as THREE.Mesh;
-      if(focusRing.visible){const pulse=1+Math.sin(t*7)*.12;focusRing.scale.setScalar(pulse);focusRing.rotation.z=t*1.8;const ringMaterial=focusRing.material as THREE.MeshBasicMaterial;ringMaterial.opacity=token.userData.effectFocus?.98:.76;}
-      if(focusGlow.visible){const glowPulse=1.05+Math.sin(t*5.2)*.16;focusGlow.scale.setScalar(glowPulse);}
+      const focusRing=token.userData.focusRing as THREE.Mesh;
+      if(focusRing.visible){const pulse=1+Math.sin(t*5.5)*.045;focusRing.scale.setScalar(pulse);const ringMaterial=focusRing.material as THREE.MeshBasicMaterial;ringMaterial.opacity=token.userData.effectFocus?.92:.72;}
     }
-    for(const marker of this.clusterMarkers.values()){const ring=marker.userData.ring as THREE.Mesh;ring.rotation.z=t*.72;ring.scale.setScalar(1+Math.sin(t*4.4+marker.userData.count)*.055);}
     const focusToken=(this.effectFocusRacerId?this.tokens.get(this.effectFocusRacerId):undefined)??movingFocus??(this.interactionFocusRacerId?this.tokens.get(this.interactionFocusRacerId):undefined);
     const desiredTarget=this.manualCameraTarget.clone();
     if(focusToken)focusToken.getWorldPosition(desiredTarget);

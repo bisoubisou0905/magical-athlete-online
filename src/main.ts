@@ -17,6 +17,7 @@ let botTimer:number|undefined;
 let rollTimer:number|undefined;
 let eventTimer:number|undefined;
 let eventPumpTimer:number|undefined;
+let eventTickTimer:number|undefined;
 let revealTimer:number|undefined;
 let revealTickTimer:number|undefined;
 let motionTimer:number|undefined;
@@ -47,12 +48,11 @@ let presentationUntil=0;
 let finishDrama:FinishChance|null=null;
 let cameraMoved=false;
 const finishAudio=new FinishDramaAudio(soundEnabled);
-const EFFECT_DISPLAY_MIN_MS=820;
-const EFFECT_DISPLAY_MAX_MS=1080;
-const EFFECT_GAP_MS=90;
-const NORMAL_ROLL_MS=1050;
+const EFFECT_DISPLAY_MS=5000;
+const EFFECT_GAP_MS=140;
+const NORMAL_ROLL_MS=1650;
 const FINISH_ROLL_MS=2350;
-const NORMAL_MOVE_DELAY=680;
+const NORMAL_MOVE_DELAY=1420;
 const FINISH_MOVE_DELAY=1850;
 
 window.addEventListener('pointerdown',()=>{if(soundEnabled)void finishAudio.unlock();},{capture:true});
@@ -90,7 +90,7 @@ session.onState=view=>{
     rollTimer=window.setTimeout(()=>{render();pumpEffectQueue();},rollDuration+30);
   }
   const freshEffect=view.logs.find(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move');
-  if(freshEffect&&!settlingRacerId){settlingRacerId=previous?.turnRacerId??freshEffect.sourceRacerId??null;presentationUntil=performance.now()+EFFECT_DISPLAY_MIN_MS;}
+  if(freshEffect&&!settlingRacerId){settlingRacerId=previous?.turnRacerId??freshEffect.sourceRacerId??null;presentationUntil=performance.now()+EFFECT_DISPLAY_MS;}
   queueEffectEvents(view);
   if(previous?.phase==='select'&&view.phase==='race')startReveal(view);
   render();
@@ -107,7 +107,7 @@ renderLanding();
 
 function renderLanding(error=''){
   scene?.destroy();scene=null;sceneCanvas=null;currentView=null;
-  clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);
+  clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearInterval(eventTickTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);
   activeEffect=null;effectQueue=[];effectUntil=0;effectSequenceStep=0;effectSequenceTotal=0;lastSeenLogId=0;settlingRacerId=null;presentationUntil=0;finishDrama=null;cameraMoved=false;revealActive=false;inspectRacerId=null;inspectSpace=null;
   const room=new URLSearchParams(location.search).get('room')?.toUpperCase()??'';
   const remembered=localStorage.getItem('ma-player-name')??'';
@@ -167,7 +167,7 @@ function render(){
   clearTimeout(motionTimer);
   if(pendingMotion>20)motionTimer=window.setTimeout(()=>render(),pendingMotion+40);
   const preservedCanvas=sceneCanvas;
-  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement,resetCamera},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,effectSequenceStep,effectSequenceTotal,diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace,cameraMoved},status);
+  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{settingsOpen=false;logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,skipEffect,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement,resetCamera},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,effectSequenceStep,effectSequenceTotal,effectRemainingMs:Math.max(0,effectUntil-performance.now()),diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace,cameraMoved},status);
   const placeholder=document.querySelector<HTMLCanvasElement>('#track-canvas');
   if(placeholder&&scene&&preservedCanvas){
     placeholder.replaceWith(preservedCanvas);
@@ -217,7 +217,7 @@ function copyInvite(){
 }
 function addAi(){if(!session.isHost||!session.state)return;session.replaceHostState(addBot(session.state));}
 function removeAi(){if(!session.isHost||!session.state)return;session.replaceHostState(removeBot(session.state));}
-function leave(){clearTimeout(botTimer);clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);session.close();history.replaceState(null,'',location.pathname);if(updateReady)void updateSW(true);else renderLanding();}
+function leave(){clearTimeout(botTimer);clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearInterval(eventTickTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);session.close();history.replaceState(null,'',location.pathname);if(updateReady)void updateSW(true);else renderLanding();}
 
 function scheduleBots(){
   clearTimeout(botTimer);
@@ -328,17 +328,22 @@ function pumpEffectQueue(){
   effectUntil=performance.now()+duration;
   render();
   clearTimeout(eventTimer);
-  eventTimer=window.setTimeout(()=>{
-    activeEffect=null;effectUntil=0;render();
-    if(effectQueue.length)eventPumpTimer=window.setTimeout(pumpEffectQueue,EFFECT_GAP_MS);
-    else{effectSequenceStep=0;effectSequenceTotal=0;scheduleBots();}
-  },duration);
+  clearInterval(eventTickTimer);
+  eventTickTimer=window.setInterval(()=>{if(activeEffect)render();},200);
+  eventTimer=window.setTimeout(()=>finishEffectStep(),duration);
 }
 
-function effectDisplayMs(event:LogEntry){
-  const text=locale==='zh'?event.text:event.textEn;
-  return Math.round(Math.min(EFFECT_DISPLAY_MAX_MS,Math.max(EFFECT_DISPLAY_MIN_MS,720+Array.from(text).length*7)));
+function finishEffectStep(skipped=false){
+  clearTimeout(eventTimer);clearInterval(eventTickTimer);
+  if(!activeEffect)return;
+  activeEffect=null;effectUntil=0;render();
+  if(effectQueue.length)eventPumpTimer=window.setTimeout(pumpEffectQueue,skipped?70:EFFECT_GAP_MS);
+  else{effectSequenceStep=0;effectSequenceTotal=0;scheduleBots();}
 }
+
+function skipEffect(){finishEffectStep(true);}
+
+function effectDisplayMs(_event:LogEntry){return EFFECT_DISPLAY_MS;}
 
 function defaultDiceGesture(sequence:number,value:number):DiceGesture{
   const direction=(sequence+value)%2===0?1:-1;
