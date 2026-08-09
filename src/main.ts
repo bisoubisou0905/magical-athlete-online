@@ -4,6 +4,7 @@ import { OnlineSession } from './network/session';
 import { addBot, applyAction, currentDrafter, getFinishChance, removeBot, selectionComplete, type FinishChance } from './game/engine';
 import type { GameAction, GameView, LogEntry } from './game/types';
 import { quickRules, renderGame, type DiceGesture, type Locale } from './ui/render';
+import { compactRepeatedEffects } from './ui/effectPresentation';
 import { TrackScene } from './three/trackScene';
 import { FinishDramaAudio } from './audio/finishDramaAudio';
 
@@ -37,9 +38,12 @@ let inspectSpace:number|null=null;
 let updateReady=false;
 let activeEffect:LogEntry|null=null;
 let effectQueue:LogEntry[]=[];
+let effectSequenceEntries:LogEntry[]=[];
 let effectUntil=0;
 let effectSequenceStep=0;
 let effectSequenceTotal=0;
+let effectPaused=false;
+let effectPausedRemaining=0;
 let lastSeenLogId=0;
 let diceGesture:DiceGesture={x:28,y:-90,power:.75,twist:-150};
 let pendingLocalGesture=false;
@@ -89,10 +93,8 @@ session.onState=view=>{
     clearTimeout(rollTimer);
     rollTimer=window.setTimeout(()=>{render();pumpEffectQueue();},rollDuration+30);
   }
-  const freshEffect=view.logs.find(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move');
-  if(freshEffect&&!settlingRacerId){settlingRacerId=previous?.turnRacerId??freshEffect.sourceRacerId??null;presentationUntil=performance.now()+EFFECT_DISPLAY_MS;}
-  queueEffectEvents(view);
   if(previous?.phase==='select'&&view.phase==='race')startReveal(view);
+  queueEffectEvents(view);
   render();
   scheduleAutomaticAssist(view);
   scheduleBots();
@@ -108,7 +110,7 @@ renderLanding();
 function renderLanding(error=''){
   scene?.destroy();scene=null;sceneCanvas=null;currentView=null;
   clearTimeout(revealTimer);clearInterval(revealTickTimer);clearTimeout(rollTimer);clearTimeout(eventTimer);clearTimeout(eventPumpTimer);clearInterval(eventTickTimer);clearTimeout(motionTimer);clearTimeout(autoAssistTimer);
-  activeEffect=null;effectQueue=[];effectUntil=0;effectSequenceStep=0;effectSequenceTotal=0;lastSeenLogId=0;settlingRacerId=null;presentationUntil=0;finishDrama=null;cameraMoved=false;revealActive=false;inspectRacerId=null;inspectSpace=null;
+  activeEffect=null;effectQueue=[];effectSequenceEntries=[];effectUntil=0;effectSequenceStep=0;effectSequenceTotal=0;effectPaused=false;effectPausedRemaining=0;lastSeenLogId=0;settlingRacerId=null;presentationUntil=0;finishDrama=null;cameraMoved=false;revealActive=false;inspectRacerId=null;inspectSpace=null;
   const room=new URLSearchParams(location.search).get('room')?.toUpperCase()??'';
   const remembered=localStorage.getItem('ma-player-name')??'';
   app.innerHTML=`<main class="join-page">
@@ -167,7 +169,7 @@ function render(){
   clearTimeout(motionTimer);
   if(pendingMotion>20)motionTimer=window.setTimeout(()=>render(),pendingMotion+40);
   const preservedCanvas=sceneCanvas;
-  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{settingsOpen=false;logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,skipEffect,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement,resetCamera},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,effectSequenceStep,effectSequenceTotal,effectRemainingMs:Math.max(0,effectUntil-performance.now()),diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace,cameraMoved},status);
+  renderGame(app,currentView,{dispatch,rollDice,copyInvite,addBot:addAi,removeBot:removeAi,leave,openSettings:()=>{settingsOpen=true;render();},closeSettings:()=>{settingsOpen=false;render();},setLocale,toggleLog:()=>{settingsOpen=false;logOpen=!logOpen;render();},toggleSound,toggleAutoAdvance,skipReveal,skipEffect,toggleEffectPause,closeInspector:()=>{inspectRacerId=null;inspectSpace=null;render();},confirmMovement,resetCamera},{locale,settingsOpen,logOpen,showRollFx:rollActive,showReveal:showingReveal,revealIndex,revealRemainingMs:Math.max(0,revealUntil-performance.now()),motionLocked:showingReveal||rollActive||pendingMotion>20||Boolean(activeEffect)||effectQueue.length>0,activeEffect,effectQueueLength:effectQueue.length,effectSequenceStep,effectSequenceTotal,effectSequenceEntries,effectRemainingMs:currentEffectRemaining(),effectPaused,diceGesture,presentedRacerId,finishChance:getFinishChance(currentView),finishDrama:finishDramaActive?finishDrama:null,soundEnabled,autoAdvance,inspectRacerId,inspectSpace,cameraMoved},status);
   const placeholder=document.querySelector<HTMLCanvasElement>('#track-canvas');
   if(placeholder&&scene&&preservedCanvas){
     placeholder.replaceWith(preservedCanvas);
@@ -202,7 +204,7 @@ function advanceReveal(){
   clearTimeout(revealTimer);clearInterval(revealTickTimer);
   if(!currentView||!revealActive)return;
   revealIndex++;
-  if(revealIndex>=currentView.racers.length){revealActive=false;revealUntil=0;render();scheduleBots();return;}
+  if(revealIndex>=currentView.racers.length){revealActive=false;revealUntil=0;render();pumpEffectQueue();scheduleBots();return;}
   scheduleRevealStep();
 }
 
@@ -221,7 +223,7 @@ function leave(){clearTimeout(botTimer);clearTimeout(revealTimer);clearInterval(
 
 function scheduleBots(){
   clearTimeout(botTimer);
-  if(!session.isHost||!session.state||!session.state.demoMode||revealActive)return;
+  if(!session.isHost||!session.state||!session.state.demoMode||revealActive||effectPaused)return;
   const s=session.state;
   let botId:string|undefined;
   if(s.presentationGate)botId=s.players.find(p=>p.id===s.presentationGate!.playerId&&p.isBot)?.id;
@@ -231,8 +233,9 @@ function scheduleBots(){
   }else if(s.phase==='select')botId=s.players.find(p=>p.isBot&&!selectionComplete(s,p.id))?.id;
   else if(s.phase==='race')botId=s.players.find(p=>p.id===s.turnPlayerId&&p.isBot)?.id;
   if(!botId)return;
+  const acknowledgingGate=s.presentationGate?.playerId===botId;
   const movementDelay=scene?.getPendingAnimationMs()??0;
-  const eventDelay=Math.max(0,effectUntil-performance.now())+effectQueue.reduce((total,event)=>total+effectDisplayMs(event)+EFFECT_GAP_MS,0);
+  const eventDelay=acknowledgingGate?0:currentEffectRemaining()+effectQueue.reduce((total,event)=>total+effectDisplayMs(event)+EFFECT_GAP_MS,0);
   const rollDelay=Math.max(0,rollFxUntil-performance.now());
   const delay=Math.max(850,rollDelay+180,movementDelay+450,eventDelay+220);
   botTimer=window.setTimeout(()=>takeBotAction(botId!),delay);
@@ -241,6 +244,8 @@ function scheduleBots(){
 function takeBotAction(botId:string){
   if(!session.isHost||!session.state)return;
   const s=session.state;
+  const acknowledgingGate=s.presentationGate?.playerId===botId;
+  if(activeEffect||effectPaused||(effectQueue.length&&!acknowledgingGate)){scheduleBots();return;}
   const bot=s.players.find(p=>p.id===botId&&p.isBot);
   if(!bot)return;
   let action:GameAction|undefined;
@@ -276,11 +281,12 @@ function toggleAutoAdvance(){
 }
 
 function scheduleAutomaticAssist(view:GameView){
-  clearTimeout(autoAssistTimer);if(!autoAdvance)return;
+  clearTimeout(autoAssistTimer);
   if(view.presentationGate?.playerId===view.viewerId){
     const gateId=view.presentationGate.id;const delay=Math.max(180,rollFxUntil-performance.now()+140);
     autoAssistTimer=window.setTimeout(()=>{if(currentView?.presentationGate?.id===gateId)dispatch({type:'ACK_PRESENTATION',id:gateId});},delay);return;
   }
+  if(!autoAdvance)return;
   if(view.pendingDecision?.playerId===view.viewerId&&view.pendingDecision.kind==='recover-trip'){
     autoAssistTimer=window.setTimeout(()=>{if(currentView?.pendingDecision?.kind==='recover-trip')dispatch({type:'DECIDE',value:'recover'});},650);
   }
@@ -304,11 +310,12 @@ function resetCamera(){
 
 function queueEffectEvents(view:GameView){
   const newest=view.logs.at(-1)?.id??lastSeenLogId;
-  const fresh=view.logs.filter(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move');
+  const fresh=compactRepeatedEffects(view.logs.filter(log=>log.id>lastSeenLogId&&log.sourceRacerId&&log.effectKind&&log.effectKind!=='move'&&log.effectKind!=='modifier'));
   lastSeenLogId=Math.max(lastSeenLogId,newest);
   if(fresh.length){
-    if(!activeEffect&&effectQueue.length===0){effectSequenceStep=0;effectSequenceTotal=fresh.length;}
-    else effectSequenceTotal+=fresh.length;
+    if(!activeEffect&&effectQueue.length===0){effectSequenceStep=0;effectSequenceEntries=[];}
+    effectSequenceEntries.push(...fresh);
+    effectSequenceTotal=effectSequenceEntries.length;
     effectQueue.push(...fresh);
     pumpEffectQueue();
   }
@@ -316,32 +323,63 @@ function queueEffectEvents(view:GameView){
 
 function pumpEffectQueue(){
   clearTimeout(eventPumpTimer);
-  if(activeEffect||!effectQueue.length||!currentView)return;
+  if(revealActive||activeEffect||!effectQueue.length||!currentView)return;
   const waitForDice=Math.max(0,rollFxUntil-performance.now());
   const waitForMotion=scene?.getPendingAnimationMs()??0;
   const waitForGate=currentView.presentationGate?420:0;
   const waitForPresentation=Math.max(waitForDice,waitForMotion,presentationUntil-performance.now(),waitForGate);
   if(waitForPresentation>20){eventPumpTimer=window.setTimeout(pumpEffectQueue,waitForPresentation+25);return;}
   activeEffect=effectQueue.shift()!;
+  clearTimeout(botTimer);
   effectSequenceStep++;
   const duration=effectDisplayMs(activeEffect);
-  effectUntil=performance.now()+duration;
+  effectPaused=false;effectPausedRemaining=0;
   render();
-  clearTimeout(eventTimer);
-  clearInterval(eventTickTimer);
-  eventTickTimer=window.setInterval(()=>{if(activeEffect)render();},200);
-  eventTimer=window.setTimeout(()=>finishEffectStep(),duration);
+  startEffectClock(duration);
 }
 
 function finishEffectStep(skipped=false){
   clearTimeout(eventTimer);clearInterval(eventTickTimer);
   if(!activeEffect)return;
-  activeEffect=null;effectUntil=0;render();
+  activeEffect=null;effectUntil=0;effectPaused=false;effectPausedRemaining=0;render();
   if(effectQueue.length)eventPumpTimer=window.setTimeout(pumpEffectQueue,skipped?70:EFFECT_GAP_MS);
-  else{effectSequenceStep=0;effectSequenceTotal=0;scheduleBots();}
+  else{effectSequenceStep=0;effectSequenceTotal=0;effectSequenceEntries=[];scheduleBots();}
 }
 
 function skipEffect(){finishEffectStep(true);}
+
+function toggleEffectPause(){
+  if(!activeEffect)return;
+  if(effectPaused){
+    effectPaused=false;
+    const remaining=Math.max(250,effectPausedRemaining);
+    effectPausedRemaining=0;
+    render();startEffectClock(remaining);
+  }else{
+    effectPausedRemaining=currentEffectRemaining();effectPaused=true;
+    clearTimeout(eventTimer);clearInterval(eventTickTimer);clearTimeout(botTimer);
+    render();updateEffectClock();
+  }
+}
+
+function currentEffectRemaining(){return activeEffect?(effectPaused?effectPausedRemaining:Math.max(0,effectUntil-performance.now())):0;}
+
+function startEffectClock(duration:number){
+  clearTimeout(eventTimer);clearInterval(eventTickTimer);
+  effectUntil=performance.now()+duration;
+  updateEffectClock();
+  eventTickTimer=window.setInterval(updateEffectClock,100);
+  eventTimer=window.setTimeout(()=>finishEffectStep(),duration);
+}
+
+function updateEffectClock(){
+  if(!activeEffect)return;
+  const remaining=currentEffectRemaining();
+  const seconds=app.querySelector<HTMLElement>('[data-effect-seconds]');
+  if(seconds)seconds.textContent=String(Math.max(0,Math.ceil(remaining/1000)));
+  const theater=app.querySelector<HTMLElement>('.effect-theater');
+  theater?.style.setProperty('--remaining',String(Math.max(0,Math.min(1,remaining/EFFECT_DISPLAY_MS))));
+}
 
 function effectDisplayMs(_event:LogEntry){return EFFECT_DISPLAY_MS;}
 

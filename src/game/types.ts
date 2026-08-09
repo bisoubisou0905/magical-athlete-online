@@ -44,7 +44,9 @@ export interface LogEntry {
   tone?: 'normal' | 'power' | 'score' | 'warning';
   sourceRacerId?: string;
   targetRacerId?: string;
-  effectKind?: 'move' | 'ability' | 'track' | 'finish' | 'decision';
+  effectKind?: 'move' | 'modifier' | 'ability' | 'track' | 'finish' | 'decision';
+  modifier?: number;
+  repeatCount?: number;
 }
 
 export interface PresentationGate {

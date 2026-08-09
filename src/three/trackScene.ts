@@ -15,6 +15,10 @@ export class TrackScene {
   private renderer:THREE.WebGLRenderer;
   private root=new THREE.Group();
   private tokens=new Map<string,THREE.Group>();
+  private locatorLines=new Map<string,THREE.Group>();
+  private modifierLogIds=new Set<number>();
+  private modifierBursts:Array<{sprite:THREE.Sprite;racerId:string;startsAt:number;expiresAt:number;stack:number}>=[];
+  private modifiersInitialized=false;
   private textureLoader=new THREE.TextureLoader();
   private boardArtwork:THREE.Mesh|null=null;
   private trackKind:TrackKind|null=null;
@@ -79,8 +83,9 @@ export class TrackScene {
       const owner=view.players.find(p=>p.id===r.playerId)!;
       const viewerOwned=r.playerId===view.viewerId;
       if(token?.userData.racerId!==r.racerId||token?.userData.locale!==this.locale||token?.userData.ownerName!==owner.name||token?.userData.viewerOwned!==viewerOwned){
-        if(token){this.root.remove(token);this.disposeObject(token);}
+        if(token){this.root.remove(token);this.disposeObject(token);const previousLocator=this.locatorLines.get(r.id);if(previousLocator){this.root.remove(previousLocator);this.disposeObject(previousLocator);this.locatorLines.delete(r.id);}}
         token=this.makeToken(owner.color,r.racerId,owner.name,viewerOwned);this.tokens.set(r.id,token);this.root.add(token);
+        const locator=this.makeLocator(owner.color);this.locatorLines.set(r.id,locator);this.root.add(locator);
         const initial=this.positions[Math.min(r.position,TRACK_LENGTH)].clone();initial.y=.24+index*.025;token.position.copy(initial);token.userData.logicalPosition=r.position;
       }
       token.visible=!r.eliminated;
@@ -121,6 +126,7 @@ export class TrackScene {
         }else{token.userData.pendingTrip=false;token.userData.recoverStartedAt=performance.now();this.animationEndsAt=Math.max(this.animationEndsAt,performance.now()+680);}
       }
       token.userData.target=target;token.userData.tripped=r.tripped;token.userData.finished=r.finished;token.userData.clusterScale=this.sharedSpaceScale(same.length);
+      token.userData.spaceCenter=base.clone();token.userData.clustered=same.length>1;token.userData.clusterAnchor=slot===0;
       const isTurn=(presentedTurnRacerId??view.turnRacerId)===r.id;
       const isEffect=effectRacerId===r.id||effectTargetRacerId===r.id;
       token.userData.focusRing.visible=isTurn||isEffect;
@@ -129,7 +135,8 @@ export class TrackScene {
       const focusMaterial=(token.userData.focusRing as THREE.Mesh).material as THREE.MeshBasicMaterial;
       focusMaterial.color.setHex(isEffect?0x55d5ee:0xffffff);
     });
-    for(const [id,token] of this.tokens)if(!active.has(id)){this.root.remove(token);this.disposeObject(token);this.tokens.delete(id);}
+    for(const [id,token] of this.tokens)if(!active.has(id)){this.root.remove(token);this.disposeObject(token);this.tokens.delete(id);const locator=this.locatorLines.get(id);if(locator){this.root.remove(locator);this.disposeObject(locator);this.locatorLines.delete(id);}}
+    this.syncModifierBursts(view,movementStartDelay);
     this.effectFocusRacerId=effectTargetRacerId??effectRacerId??null;
     this.interactionFocusRacerId=heldMovementRacerId??null;
   }
@@ -137,6 +144,7 @@ export class TrackScene {
   destroy(){
     cancelAnimationFrame(this.raf);removeEventListener('resize',this.resize);clearTimeout(this.longPressTimer);
     this.canvas.removeEventListener('pointerdown',this.onPointerDown);this.canvas.removeEventListener('pointermove',this.onPointerMove);this.canvas.removeEventListener('pointerup',this.onPointerUp);this.canvas.removeEventListener('pointercancel',this.onPointerCancel);this.canvas.removeEventListener('wheel',this.onWheel);
+    for(const burst of this.modifierBursts){this.scene.remove(burst.sprite);this.disposeObject(burst.sprite);}this.modifierBursts=[];
     this.renderer.dispose();
   }
   resizeNow(){this.resize();}
@@ -175,15 +183,15 @@ export class TrackScene {
     if(!Number.isFinite(tangent.x))tangent.set(1,0);
     const normal=new THREE.Vector2(-tangent.y,tangent.x);
     const coordinates=count===2
-      ? [[-.58,0],[.58,0]]
+      ? [[-.62,0],[.62,0]]
       : count===3
-        ? [[-.66,.2],[.66,.2],[0,-.56]]
-        : [[-.58,.46],[.58,.46],[-.58,-.46],[.58,-.46]];
+        ? [[-.72,.24],[.72,.24],[0,-.58]]
+        : [[-.74,.5],[.74,.5],[-.74,-.5],[.74,-.5]];
     const [across,along]=coordinates[Math.min(slot,coordinates.length-1)];
     return normal.multiplyScalar(across).add(tangent.multiplyScalar(along));
   }
 
-  private sharedSpaceScale(count:number){return count<=1?1:count===2?.84:count===3?.72:.64;}
+  private sharedSpaceScale(count:number){return count<=1?1:count===2?.9:count===3?.78:.72;}
 
   private makeToken(color:string,racerId:string,ownerName:string,viewerOwned=false){
     const g=new THREE.Group();g.userData.racerId=racerId;g.userData.locale=this.locale;g.userData.ownerName=ownerName;g.userData.viewerOwned=viewerOwned;
@@ -195,16 +203,42 @@ export class TrackScene {
     const base=new THREE.Mesh(new THREE.CylinderGeometry(.54,.65,.2,20),playerMaterial);base.position.y=.13;base.castShadow=true;base.receiveShadow=true;body.add(base);
     const rim=new THREE.Mesh(new THREE.TorusGeometry(.56,.065,8,28),ink);rim.rotation.x=Math.PI/2;rim.position.y=.24;body.add(rim);
     const stem=new THREE.Mesh(new THREE.BoxGeometry(.64,.18,.16),ink);stem.position.y=.39;stem.castShadow=true;body.add(stem);
+    const backplate=new THREE.Mesh(new THREE.BoxGeometry(1.28,1.44,.09),ink);backplate.position.set(0,1.04,-.015);backplate.castShadow=true;body.add(backplate);
     const frame=new THREE.Mesh(new THREE.BoxGeometry(1.16,1.32,.1),playerMaterial);frame.position.y=1.04;frame.castShadow=true;body.add(frame);
     const texture=this.textureLoader.load(`${import.meta.env.BASE_URL}racers/${racerId}.webp`);
     texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=this.renderer.capabilities.getMaxAnisotropy();texture.generateMipmaps=true;texture.minFilter=THREE.LinearMipmapLinearFilter;texture.magFilter=THREE.LinearFilter;
-    const portrait=new THREE.Mesh(new THREE.PlaneGeometry(1.04,1.18),new THREE.MeshStandardMaterial({map:texture,roughness:.7,metalness:0}));portrait.position.set(0,1.04,.056);body.add(portrait);
+    const portraitMaterial=new THREE.MeshBasicMaterial({map:texture,toneMapped:false});
+    const portrait=new THREE.Mesh(new THREE.PlaneGeometry(1.04,1.18),portraitMaterial);portrait.position.set(0,1.04,.056);body.add(portrait);
     const tripFx=new THREE.Group();
     ['✦','★','✧'].forEach((symbol,index)=>{const star=this.textSprite(symbol,index===1?0xffd52a:0xff8f4d);star.position.set((index-1)*.52,1.15+index*.22,.2);star.scale.set(.33,.33,1);tripFx.add(star);});
     tripFx.visible=false;g.add(tripFx);g.userData.tripFx=tripFx;
     g.userData.playerMaterial=playerMaterial;
     g.userData.tripped=false;
     g.position.set(0,4,0);return g;
+  }
+
+  private makeLocator(color:string){
+    const group=new THREE.Group();group.renderOrder=4;
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute([0,.065,0,0,.065,0],3));
+    const line=new THREE.Line(geometry,new THREE.LineBasicMaterial({color,transparent:true,opacity:.92,depthTest:false}));line.renderOrder=4;group.add(line);group.userData.line=line;
+    const dot=new THREE.Mesh(new THREE.CircleGeometry(.13,20),new THREE.MeshBasicMaterial({color:0xfff8e8,transparent:true,opacity:.96,depthTest:false,side:THREE.DoubleSide}));dot.rotation.x=-Math.PI/2;dot.position.y=.07;dot.renderOrder=5;group.add(dot);group.userData.dot=dot;
+    group.visible=false;return group;
+  }
+
+  private syncModifierBursts(view:GameView,movementStartDelay:number){
+    const entries=view.logs.filter(log=>log.effectKind==='modifier'&&log.modifier&&log.sourceRacerId);
+    if(!this.modifiersInitialized){entries.forEach(log=>this.modifierLogIds.add(log.id));this.modifiersInitialized=true;return;}
+    const fresh=entries.filter(log=>!this.modifierLogIds.has(log.id));
+    const stackByTarget=new Map<string,number>();
+    for(const log of fresh){
+      this.modifierLogIds.add(log.id);
+      const racerId=log.targetRacerId??log.sourceRacerId!;
+      const stack=stackByTarget.get(racerId)??0;stackByTarget.set(racerId,stack+1);
+      const value=log.modifier!;const label=`${value>0?'+':''}${value} ${this.locale==='zh'?'步':'STEP'}`;
+      const sprite=this.textSprite(label,value>0?0x55d5ee:0xff6a48,true);sprite.scale.set(1.65,.55,1);sprite.visible=false;sprite.renderOrder=100;(sprite.material as THREE.SpriteMaterial).depthTest=false;this.scene.add(sprite);
+      const startsAt=performance.now()+Math.max(0,movementStartDelay-360)+stack*80;
+      this.modifierBursts.push({sprite,racerId,startsAt,expiresAt:startsAt+1350,stack});
+    }
   }
 
   private buildArena(){
@@ -218,7 +252,7 @@ export class TrackScene {
   }
 
   private disposeObject(object:THREE.Object3D){
-    object.traverse(child=>{if(!(child instanceof THREE.Mesh||child instanceof THREE.Sprite))return;child.geometry?.dispose();const materials=Array.isArray(child.material)?child.material:[child.material];for(const material of materials){const map=(material as THREE.MeshStandardMaterial).map;map?.dispose();material.dispose();}});
+    object.traverse(child=>{if(!(child instanceof THREE.Mesh||child instanceof THREE.Sprite||child instanceof THREE.Line))return;child.geometry?.dispose();const materials=Array.isArray(child.material)?child.material:[child.material];for(const material of materials){const map=(material as THREE.MeshStandardMaterial).map;map?.dispose();material.dispose();}});
   }
 
   private textSprite(text:string,color:number,plaque=false){
@@ -274,6 +308,22 @@ export class TrackScene {
       const material=token.userData.playerMaterial as THREE.MeshPhysicalMaterial;material.emissiveIntensity=token.userData.active?.24:.08;
       const focusRing=token.userData.focusRing as THREE.Mesh;
       if(focusRing.visible){const pulse=1+Math.sin(t*5.5)*.045;focusRing.scale.setScalar(pulse);const ringMaterial=focusRing.material as THREE.MeshBasicMaterial;ringMaterial.opacity=token.userData.effectFocus?.92:.72;}
+      const racerStateId=token.userData.racerStateId as string|undefined;const locator=racerStateId?this.locatorLines.get(racerStateId):undefined;const center=token.userData.spaceCenter as THREE.Vector3|undefined;
+      if(locator&&center){
+        locator.visible=Boolean(token.visible&&token.userData.clustered&&!queue?.length&&!token.userData.stepTarget&&!token.userData.awaitingConfirmation);
+        const line=locator.userData.line as THREE.Line;const attribute=line.geometry.getAttribute('position') as THREE.BufferAttribute;
+        attribute.setXYZ(0,token.position.x,.065,token.position.z);attribute.setXYZ(1,center.x,.065,center.z);attribute.needsUpdate=true;
+        const dot=locator.userData.dot as THREE.Mesh;dot.visible=Boolean(token.userData.clusterAnchor);dot.position.set(center.x,.07,center.z);
+      }
+    }
+    for(let index=this.modifierBursts.length-1;index>=0;index--){
+      const burst=this.modifierBursts[index];
+      if(now>=burst.expiresAt){this.scene.remove(burst.sprite);this.disposeObject(burst.sprite);this.modifierBursts.splice(index,1);continue;}
+      if(now<burst.startsAt){burst.sprite.visible=false;continue;}
+      const token=this.tokens.get(burst.racerId);if(!token){burst.sprite.visible=false;continue;}
+      const progress=(now-burst.startsAt)/(burst.expiresAt-burst.startsAt);const world=new THREE.Vector3();token.getWorldPosition(world);
+      burst.sprite.visible=true;burst.sprite.position.set(world.x,world.y+1.42+burst.stack*.72+progress*.24,world.z);
+      const material=burst.sprite.material as THREE.SpriteMaterial;material.opacity=Math.min(1,progress*7,(1-progress)*5);
     }
     const focusToken=(this.effectFocusRacerId?this.tokens.get(this.effectFocusRacerId):undefined)??movingFocus??(this.interactionFocusRacerId?this.tokens.get(this.interactionFocusRacerId):undefined);
     const desiredTarget=this.manualCameraTarget.clone();
@@ -355,5 +405,5 @@ export class TrackScene {
     this.manualCameraTarget.x=THREE.MathUtils.clamp(this.manualCameraTarget.x,-xLimit,xLimit);this.manualCameraTarget.z=THREE.MathUtils.clamp(this.manualCameraTarget.z,-zLimit,zLimit);this.manualCameraTarget.y=0;this.manualCameraMoved=true;
   }
 
-  private resize=()=>{const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;this.renderer.setSize(rect.width,rect.height,false);const aspect=rect.width/rect.height;this.camera.up.set(0,1,0);this.mobileView=aspect<.72;this.mobileTokenScale=this.mobileView?1.22:1;if(this.mobileView){this.root.rotation.y=Math.PI/2;this.camera.position.set(0,18,24);this.camera.lookAt(this.cameraTarget);const halfWidth=5.45;this.camera.left=-halfWidth;this.camera.right=halfWidth;this.camera.top=halfWidth/aspect;this.camera.bottom=-halfWidth/aspect;}else{this.root.rotation.y=0;this.camera.position.set(16,18,20);this.camera.lookAt(this.cameraTarget);const size=10;this.camera.left=-size*aspect;this.camera.right=size*aspect;this.camera.top=size;this.camera.bottom=-size;}this.camera.updateProjectionMatrix();};
+  private resize=()=>{const rect=this.canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;this.renderer.setSize(rect.width,rect.height,false);const aspect=rect.width/rect.height;this.camera.up.set(0,1,0);this.mobileView=aspect<.72;this.mobileTokenScale=this.mobileView?1.22:1;if(this.mobileView){this.root.rotation.y=Math.PI/2;this.camera.position.set(0,22,18);this.camera.lookAt(this.cameraTarget);const halfWidth=5.45;this.camera.left=-halfWidth;this.camera.right=halfWidth;this.camera.top=halfWidth/aspect;this.camera.bottom=-halfWidth/aspect;}else{this.root.rotation.y=0;this.camera.position.set(16,18,20);this.camera.lookAt(this.cameraTarget);const size=10;this.camera.left=-size*aspect;this.camera.right=size*aspect;this.camera.top=size;this.camera.bottom=-size;}this.camera.updateProjectionMatrix();};
 }

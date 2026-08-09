@@ -144,7 +144,7 @@ describe('Magical Athlete rules engine',()=>{
     before.rngSeed=seedForRoll(1);
     before=applyAction(before,'p1',{type:'ROLL'});
     expect(before.racers[0].position).toBe(18);
-    expect(before.logs).toContainEqual(expect.objectContaining({sourceRacerId:'p1:0',effectKind:'ability',text:expect.stringContaining('+3')}));
+    expect(before.logs).toContainEqual(expect.objectContaining({sourceRacerId:'p1:0',effectKind:'modifier',modifier:3,text:expect.stringContaining('+3')}));
 
     let onCorner=raceState(['blimp','coach'],[15,0]);
     onCorner.rngSeed=seedForRoll(1);
@@ -266,10 +266,12 @@ describe('Magical Athlete rules engine',()=>{
     let gunk=raceState(['banana','gunk'],[0,8]);gunk.rngSeed=seedForRoll(3);
     gunk=applyAction(gunk,'p1',{type:'ROLL'});
     expect(gunk.racers[0].position).toBe(2);
+    expect(gunk.logs).toContainEqual(expect.objectContaining({effectKind:'modifier',modifier:-1,sourceRacerId:'p2:0',targetRacerId:'p1:0'}));
 
     let hare=raceState(['hare','banana'],[0,0]);hare.rngSeed=seedForRoll(1);
     hare=applyAction(hare,'p1',{type:'ROLL'});
     expect(hare.racers[0].position).toBe(3);
+    expect(hare.logs).toContainEqual(expect.objectContaining({effectKind:'modifier',modifier:2,sourceRacerId:'p1:0'}));
 
     let proudHare=beginConfiguredTurn(raceState(['hare','banana'],[5,0]));
     expect(proudHare.racers[0].position).toBe(5);
@@ -442,9 +444,9 @@ describe('Magical Athlete rules engine',()=>{
     expect(new Set(covered)).toEqual(new Set(RACERS.map(r=>r.id)));
   });
 
-  it('stress-runs 60 complete 2–4 player games and exercises all 36 racers',()=>{
+  it('stress-runs 90 complete 2–4 player games and exercises all 36 racers',()=>{
     const exercised=new Set<string>();
-    for(const count of [2,3,4])for(let seed=1;seed<=20;seed++){
+    for(const count of [2,3,4])for(let seed=1;seed<=30;seed++){
       let s=createGame(`STRESS${count}`,'p1','选手1',count*10000+seed);
       for(let i=2;i<=count;i++)s=addPlayer(s,`p${i}`,`选手${i}`);
       s=finishDraft(s);let actions=0;

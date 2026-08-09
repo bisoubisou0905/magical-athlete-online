@@ -411,17 +411,17 @@ function resolveRoll(s: GameState, r: RacerState, roll: number, rocketDouble = f
   // Blimp receives +3 only before that corner, and -1 on or after it.
   if (hasPower(s,r,'blimp')) {
     const modifier=r.lastTurnStart < 15 ? 3 : -1;amount+=modifier;
-    describePower(s,r,modifier>0?'飞艇在第二拐角前，主移动 +3':'飞艇越过第二拐角，主移动 -1',modifier>0?'Blimp is before the second corner: main move +3':'Blimp is past the second corner: main move -1');
+    describePower(s,r,modifier,modifier>0?'飞艇在第二拐角前，主移动 +3':'飞艇越过第二拐角，主移动 -1',modifier>0?'Blimp is before the second corner: main move +3':'Blimp is past the second corner: main move -1');
   }
-  if (hasPower(s,r,'hare')) { amount += 2;describePower(s,r,'野兔的主移动 +2','Hare adds 2 to its main move'); }
+  if (hasPower(s,r,'hare')) { amount += 2;describePower(s,r,2,'野兔的主移动 +2','Hare adds 2 to its main move'); }
   const gunk=activeRacers(s).find(x=>x.id!==r.id&&hasPower(s,x,'gunk'));
-  if (gunk) { amount -= 1;describePower(s,gunk,`${racerNameOf(s,r)} 受黏液影响，主移动 -1`,`${racerNameOf(s,r,'en')} is slowed by Gunk: main move -1`,r); }
+  if (gunk) { amount -= 1;describePower(s,gunk,-1,`${racerNameOf(s,r)} 受黏液影响，主移动 -1`,`${racerNameOf(s,r,'en')} is slowed by Gunk: main move -1`,r); }
   for (const coach of activeRacers(s).filter(x => hasPower(s,x,'coach') && x.position === r.position)) {
-    amount += 1;describePower(s,coach,`${racerNameOf(s,r)} 与教练同格，主移动 +1`,`${racerNameOf(s,r,'en')} shares a space with Coach: main move +1`,r);
+    amount += 1;describePower(s,coach,1,`${racerNameOf(s,r)} 与教练同格，主移动 +1`,`${racerNameOf(s,r,'en')} shares a space with Coach: main move +1`,r);
   }
   if (hasPower(s,r,'party-animal')) {
     const guests=activeRacers(s).filter(x => x.id !== r.id && x.position === r.position).length;
-    if(guests){amount+=guests;describePower(s,r,`派对动物与 ${guests} 名角色同格，主移动 +${guests}`,`Party Animal shares its space with ${guests} racer${guests===1?'':'s'}: main move +${guests}`);}
+    if(guests){amount+=guests;describePower(s,r,guests,`派对动物与 ${guests} 名角色同格，主移动 +${guests}`,`Party Animal shares its space with ${guests} racer${guests===1?'':'s'}: main move +${guests}`);}
   }
   amount = Math.max(0, amount);
 
@@ -775,8 +775,8 @@ function power(s:GameState,r:RacerState,text:string,textEn=text,target?:RacerSta
   }
 }
 
-function describePower(s:GameState,r:RacerState,text:string,textEn=text,target?:RacerState){
-  addLog(s,text,'power',textEn,{sourceRacerId:r.id,targetRacerId:target?.id,effectKind:'ability'});
+function describePower(s:GameState,r:RacerState,modifier:number,text:string,textEn=text,target?:RacerState){
+  addLog(s,text,'power',textEn,{sourceRacerId:r.id,targetRacerId:target?.id,effectKind:'modifier',modifier});
   triggerScoochers(s,r);
 }
 
@@ -854,5 +854,5 @@ function rollOff(s:GameState,playerIds:string[],reasonZh:string,reasonEn:string)
   }
   return playerIds[0];
 }
-function addLog(s:GameState,text:string,tone:'normal'|'power'|'score'|'warning'='normal',textEn=text,meta:Pick<LogEntry,'sourceRacerId'|'targetRacerId'|'effectKind'>={}){s.logs.push({id:s.nextLogId++,text,textEn,tone,...meta});if(s.logs.length>80)s.logs.shift();}
+function addLog(s:GameState,text:string,tone:'normal'|'power'|'score'|'warning'='normal',textEn=text,meta:Pick<LogEntry,'sourceRacerId'|'targetRacerId'|'effectKind'|'modifier'>={}){s.logs.push({id:s.nextLogId++,text,textEn,tone,...meta});if(s.logs.length>80)s.logs.shift();}
 function clone<T>(v:T):T{return structuredClone(v);}
